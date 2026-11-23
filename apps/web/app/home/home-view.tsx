@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
+import { EquityChart } from "@/components/equity-chart";
 import { ExposureGauge } from "@/components/exposure-gauge";
-import { qty, signedUsd, usd } from "@/lib/client/format";
+import { isNeg, qty, signedUsd, usd } from "@/lib/client/format";
 import { usePoll } from "@/lib/client/use-poll";
 import type { PortfolioView } from "@/lib/server/portfolio";
 
@@ -48,6 +49,18 @@ export function HomeView() {
           </div>
         ))}
       </section>
+
+      {!notFunded && (
+        <section className="rounded-2xl border border-sand-deep bg-white/70 p-7">
+          <div className="flex items-baseline justify-between">
+            <h2 className="font-display text-2xl text-forest-deep">Equity</h2>
+            <span className="text-xs text-ink-soft">last 7 days</span>
+          </div>
+          <div className="mt-5">
+            <EquityChart />
+          </div>
+        </section>
+      )}
 
       <section className="rounded-2xl border border-sand-deep bg-white/70 p-7">
         <div className="flex items-baseline justify-between">
@@ -141,7 +154,7 @@ export function HomeView() {
                     <td className="py-2 text-right">{qty(p.size)}</td>
                     <td className="py-2 text-right">{usd(p.notionalUsd)}</td>
                     <td className="py-2 text-right">{p.liquidationPrice ? usd(p.liquidationPrice) : "—"}</td>
-                    <td className={`py-2 text-right ${Number(p.unrealizedPnlUsd ?? 0) < 0 ? "text-rose" : ""}`}>{p.unrealizedPnlUsd ? signedUsd(p.unrealizedPnlUsd) : "—"}</td>
+                    <td className={`py-2 text-right ${isNeg(p.unrealizedPnlUsd) ? "text-rose" : ""}`}>{p.unrealizedPnlUsd ? signedUsd(p.unrealizedPnlUsd) : "—"}</td>
                   </tr>
                 ))}
               </tbody>

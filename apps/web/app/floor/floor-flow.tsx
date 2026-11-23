@@ -2,6 +2,7 @@
 
 import { startAuthentication } from "@simplewebauthn/browser";
 import Link from "next/link";
+import { EquityChart } from "@/components/equity-chart";
 import { useState } from "react";
 import { pct, usd } from "@/lib/client/format";
 import { api, errText } from "@/lib/client/http";
@@ -132,6 +133,12 @@ export function FloorFlow() {
               <RiskMeter v={v} />
             </div>
           )}
+          <div className="mt-8">
+            <h3 className="text-xs uppercase tracking-wider text-ink-soft">Equity and target, last 7 days</h3>
+            <div className="mt-3">
+              <EquityChart />
+            </div>
+          </div>
           <div className="mt-6 flex flex-wrap gap-3">
             {m.status === "active" && (
               <button onClick={() => void setStatus("pause")} disabled={busy} className="rounded-full border border-forest/30 px-5 py-2.5 text-sm font-medium text-forest hover:bg-sand disabled:opacity-50">
