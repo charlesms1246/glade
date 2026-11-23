@@ -3,6 +3,7 @@ import { schema, type Db } from "@glade/db";
 import { and, eq, sql } from "drizzle-orm";
 import type { BellRepo } from "../bell/service";
 import type { ExecutorRepo, OrderRow } from "../executor/types";
+import type { OnboardingRepo } from "../onboarding/onboard";
 
 const { orders, intents, bellSessions, bellSnapshots, decisions } = schema;
 
@@ -84,4 +85,29 @@ export async function publish(db: Db, event: { type: string; data: unknown }): P
 export async function tryLeaderLock(db: Db): Promise<boolean> {
   const r = await db.execute<{ locked: boolean }>(sql`select pg_try_advisory_lock(hashtext('glade-worker')) as locked`);
   return Boolean((r as unknown as { locked: boolean }[])[0]?.locked);
+}
+
+export function onboardingRepo(db: Db): OnboardingRepo {
+  const { signerKeys, tmUsers } = schema;
+  return {
+    async getSigner(userId) {
+      const [r] = await db.select().from(signerKeys).where(eq(signerKeys.userId, userId));
+      if (!r || r.revokedAt) return null;
+      return {
+        publicKeyHex: r.publicKeyHex,
+        sealed: { alg: "AES-256-GCM", encPrivateKey: r.encPrivateKey, iv: r.iv, encDataKey: r.encDataKey, dataKeyIv: r.dataKeyIv },
+      };
+    },
+    async saveSigner(userId, env, s) {
+      // Primary key on user_id: a second key for the same user fails instead of silently replacing it.
+      await db.insert(signerKeys).values({ userId, env, publicKeyHex: s.publicKeyHex, ...s.sealed });
+    },
+    async getTmUser(userId) {
+      const [r] = await db.select().from(tmUsers).where(eq(tmUsers.userId, userId));
+      return r ? { tmUserId: r.tmUserId, externalRefId: r.externalRefId, solanaAddress: r.solanaAddress, evmAddress: r.evmAddress } : null;
+    },
+    async saveTmUser(userId, env, rec) {
+      await db.insert(tmUsers).values({ userId, env, ...rec }).onConflictDoNothing();
+    },
+  };
 }
