@@ -339,3 +339,19 @@ export const floorState = pgTable("floor_state", {
   tradesToday: integer("trades_today").notNull().default(0),
   updatedAt: ts("updated_at").notNull().defaultNow(),
 });
+
+// ---- paper equity history (home and Floor charts) ------------------------------
+
+export const paperEquitySnapshots = pgTable(
+  "paper_equity_snapshots",
+  {
+    userId: uuid("user_id").notNull().references(() => appUsers.id),
+    // Start of the 15-minute bucket the snapshot belongs to.
+    at: ts("at").notNull(),
+    equityUsd: money("equity_usd").notNull(),
+    stockUsd: money("stock_usd").notNull(),
+    hedgeNotionalUsd: money("hedge_notional_usd").notNull(),
+    floorUsd: money("floor_usd"),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.at] })],
+);

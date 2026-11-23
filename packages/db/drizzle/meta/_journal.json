@@ -15,6 +15,13 @@
       "when": 1795461883763,
       "tag": "0001_mixed_deathbird",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795466061256,
+      "tag": "0002_true_smiling_tiger",
+      "breakpoints": true
     }
   ]
 }
