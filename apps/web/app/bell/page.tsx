@@ -1,12 +1,32 @@
+import { currentClosure } from "@glade/calendar";
+import Link from "next/link";
 import { connection } from "next/server";
 import { Suspense } from "react";
 import { BellBoard } from "@/components/bell-board";
 import { LiveStatus } from "@/components/live-status";
+import { BellShield } from "@/components/bell-shield";
 import { getBellView } from "@/lib/server/bell";
+import { sessionUserId } from "@/lib/server/session";
 
 async function Board() {
   await connection();
   return <BellBoard initial={await getBellView(new Date())} />;
+}
+
+async function ShieldUntilBell() {
+  await connection();
+  if (!currentClosure(new Date())) return null;
+  if (!(await sessionUserId())) {
+    return (
+      <p className="rounded-2xl bg-sand p-6 text-ink-soft">
+        <Link href="/login" className="text-forest underline">
+          Sign in
+        </Link>{" "}
+        to shield your holdings until the bell.
+      </p>
+    );
+  }
+  return <BellShield />;
 }
 
 export default function BellPage() {
@@ -23,6 +43,11 @@ export default function BellPage() {
       <div className="mt-10">
         <Suspense fallback={<p className="text-ink-soft">Reading live prices…</p>}>
           <Board />
+        </Suspense>
+      </div>
+      <div className="mt-10">
+        <Suspense fallback={null}>
+          <ShieldUntilBell />
         </Suspense>
       </div>
     </div>
