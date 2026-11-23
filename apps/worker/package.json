@@ -1,0 +1,21 @@
+{
+  "name": "@glade/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --env-file=../../.env src/main.ts",
+    "start": "tsx --env-file=../../.env src/main.ts"
+  },
+  "dependencies": {
+    "@glade/calendar": "workspace:^",
+    "@glade/db": "workspace:^",
+    "@glade/engine": "workspace:^",
+    "@glade/shared": "workspace:^",
+    "@glade/stamp": "workspace:^",
+    "@glade/tm-client": "workspace:^",
+    "decimal.js": "^10.6.0",
+    "pino": "^10.4.0",
+    "zod": "^4.6.7"
+  }
+}

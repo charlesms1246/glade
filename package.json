@@ -1,0 +1,33 @@
+{
+  "name": "glade",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --parallel --filter @glade/web --filter @glade/worker dev",
+    "build": "pnpm -r build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc -p tsconfig.json --noEmit && pnpm --filter @glade/web typecheck",
+    "lint": "eslint . && pnpm --filter @glade/web lint",
+    "format": "prettier --write .",
+    "db:generate": "pnpm --filter @glade/db generate",
+    "db:migrate": "pnpm --filter @glade/db migrate",
+    "seed:assets": "tsx scripts/seed-assets.ts",
+    "replay": "tsx scripts/replay.ts"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^22",
+    "eslint": "^9",
+    "fast-check": "^4.11.0",
+    "prettier": "^3.10.1",
+    "tsx": "^4.23.15",
+    "typescript": "^5",
+    "typescript-eslint": "^8.74.0",
+    "vitest": "^5.1.1"
+  }
+}

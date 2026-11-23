@@ -1,14 +1,18 @@
 {
-  "name": "web",
+  "name": "@glade/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@glade/calendar": "workspace:^",
+    "@glade/engine": "workspace:^",
+    "@glade/shared": "workspace:^",
     "next": "16.4.6",
     "react": "19.3.0",
     "react-dom": "19.3.0"

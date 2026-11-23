@@ -1,0 +1,4 @@
+pnpm-lock.yaml
+**/generated/**
+packages/db/drizzle/**
+apps/web/.next/**

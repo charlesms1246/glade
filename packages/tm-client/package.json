@@ -1,0 +1,22 @@
+{
+  "name": "@glade/tm-client",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "devDependencies": {
+    "openapi-typescript": "^7.13.0"
+  },
+  "dependencies": {
+    "@glade/shared": "workspace:^",
+    "@glade/stamp": "workspace:^",
+    "decimal.js": "^10.6.0",
+    "openapi-fetch": "^0.17.0",
+    "zod": "^4.6.7"
+  },
+  "scripts": {
+    "generate": "for f in gateway marketdata auth account; do openapi-typescript specs/$f.yaml -o src/generated/$f.ts; done"
+  }
+}
