@@ -1,6 +1,7 @@
 import "server-only";
 import { dec } from "@glade/shared";
 import { livePrice, stockBySymbol } from "./market";
+import { maxOrderUsd } from "./plan-rules";
 import { planHeader, type PlanBase } from "./plans";
 import { SPOT_FEE_BP, venueFor } from "./venue";
 
@@ -14,6 +15,7 @@ export interface BuyPlan extends PlanBase {
   feeBp: string;
   estQty: string;
   cashUsd: string;
+  maxOrderUsd: string;
 }
 
 export async function buildBuyPlan(userId: string, symbol: string, usd: string): Promise<{ plan: BuyPlan } | { error: string }> {
@@ -23,6 +25,8 @@ export async function buildBuyPlan(userId: string, symbol: string, usd: string):
   if (!price || dec(price).lte(0)) return { error: `No live price for ${listing.symbol} right now.` };
   const amount = dec(usd);
   const cash = dec(portfolio.cash_usd ?? "0");
+  const cap = maxOrderUsd();
+  if (amount.gt(cap)) return { error: `The per-order limit is ${dec(cap).toFixed(2)} USD.` };
   if (amount.gt(cash)) return { error: `That is more than your paper cash (${cash.toFixed(2)} USD).` };
   const fee = amount.mul(SPOT_FEE_BP).div(10_000);
   const estQty = amount.minus(fee).div(price);
@@ -50,6 +54,7 @@ export async function buildBuyPlan(userId: string, symbol: string, usd: string):
       feeBp: SPOT_FEE_BP,
       estQty: estQty.toFixed(8),
       cashUsd: cash.toFixed(2),
+      maxOrderUsd: dec(cap).toFixed(2),
     },
   };
 }

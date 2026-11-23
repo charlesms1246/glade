@@ -143,6 +143,8 @@ export function BuyFlow() {
             </dd>
             <dt className="text-ink-soft">Paper cash after</dt>
             <dd className="text-right">{usd(Number(offer.plan.cashUsd) - Number(offer.plan.usd))}</dd>
+            <dt className="text-ink-soft">Per-order limit</dt>
+            <dd className="text-right">{usd(offer.plan.maxOrderUsd)}</dd>
           </dl>
           <p className="mt-4 text-xs text-ink-soft">
             Paper order: filled at the live price when the executor runs, so the final amount can differ slightly. This

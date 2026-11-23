@@ -7,7 +7,7 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getBellView } from "./bell";
 import { db } from "./db";
 import { fundingRates, knownStockBases, livePrice, perpListings } from "./market";
-import { bellUnwindAt } from "./plan-rules";
+import { bellUnwindAt, legsOverCap, maxOrderUsd } from "./plan-rules";
 import { planHeader, type PlanBase, type PlanLeg } from "./plans";
 import { PERP_FEE_BP, venueFor } from "./venue";
 
@@ -44,6 +44,7 @@ export interface ShieldPlan extends PlanBase {
   totals: { valueUsd: string; notionalUsd: string; marginUsd: string; requiredUsdc: string; fundingPerDayUsd: string; feesUsd: string };
   scenarios: { shock: string; spotUsd: string; hedgeUsd: string; netUsd: string }[];
   cashUsd: string;
+  maxOrderUsd: string;
   ok: boolean;
   reasons: string[];
 }
@@ -52,6 +53,7 @@ export interface UnshieldPlan extends PlanBase {
   kind: "unshield";
   hedgeId: string | null;
   feesUsd: string;
+  maxOrderUsd: string;
 }
 
 const REASON_TEXT: Record<string, string> = {
@@ -60,6 +62,7 @@ const REASON_TEXT: Record<string, string> = {
   invalid_input: "Some prices were missing; try again in a moment.",
   no_holdings: "You hold no stocks yet. Buy one first.",
   no_legs: "Nothing to hedge at this ratio.",
+  above_max_order: "A leg is above the per-order limit, so it is left out. Try a lower ratio.",
 };
 
 /** Liquidation estimate for an isolated short: entry × (1 + 1/L − mmr), with mmr = 1/(2·max leverage). */
@@ -115,6 +118,7 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
     { ratio, leverage: lev, minNotionalUsd: process.env.MIN_PERP_NOTIONAL_USD ?? "10", freeUsdc: cash },
   );
   for (const r of sized.reasons) reasons.add(r);
+  const cap = dec(maxOrderUsd());
 
   const rows: ShieldRow[] = sized.legs.map((l, i) => {
     const p = usable[i]!;
@@ -132,12 +136,13 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
       liquidationEstimate: shortLiquidation(p.mark, lev, p.maxLev).toFixed(2),
       fundingPerDayUsd: l.fundingPerDay.toFixed(4),
       feeUsd: l.notional.mul(PERP_FEE_BP).div(10_000).toFixed(4),
-      rejected: l.rejected,
+      rejected: l.rejected ?? (l.notional.gt(cap) ? "above_max_order" : null),
     };
   });
+  if (rows.some((r) => r.rejected === "above_max_order")) reasons.add("above_max_order");
 
   const openLegs: PlanLeg[] = sized.legs.flatMap((l, i) =>
-    l.rejected || l.qty.lte(0)
+    rows[i]!.rejected || l.qty.lte(0)
       ? []
       : [{ assetId: l.perp_asset_id, symbol: rows[i]!.perpSymbol, side: "sell" as const, qty: l.qty.toFixed(), qtyUnit: "base" as const, leverage: lev.toFixed(), reduceOnly: false, notionalUsd: l.notional.toFixed(2), beta: rows[i]!.beta }],
   );
@@ -171,7 +176,8 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
     },
     scenarios: sized.scenarios.map((s) => ({ shock: s.shock.toFixed(), spotUsd: s.pnlSpot.toFixed(2), hedgeUsd: s.pnlHedge.toFixed(2), netUsd: s.net.toFixed(2) })),
     cashUsd: cash.toFixed(2),
-    ok: reasons.size === 0 || (openLegs.length > 0 && [...reasons].every((r) => r === "below_min_notional")),
+    maxOrderUsd: cap.toFixed(2),
+    ok: reasons.size === 0 || (openLegs.length > 0 && [...reasons].every((r) => r === "below_min_notional" || r === "above_max_order")),
     reasons: [...reasons].map((r) => REASON_TEXT[r] ?? r),
   };
 }
@@ -195,7 +201,9 @@ export async function buildUnshieldPlan(userId: string): Promise<UnshieldPlan | 
     const notional = dec(p.size!).mul(dec(p.mark_price ?? p.entry_price ?? "0"));
     return { assetId: p.asset_id!, symbol: p.symbol ?? p.asset_id!, side: "buy", qty: dec(p.size!).toFixed(), qtyUnit: "base", reduceOnly: true, notionalUsd: notional.toFixed(2), beta: "1" };
   });
+  const cap = maxOrderUsd();
+  if (legsOverCap(legs, cap).length) return { error: `A hedge is larger than the per-order limit (${dec(cap).toFixed(2)} USD) and cannot be closed in one order.` };
   const fees = legs.reduce((a, l) => a.plus(dec(l.notionalUsd).mul(PERP_FEE_BP).div(10_000)), dec(0));
   const hedge = await openHedge(userId);
-  return { ...planHeader("unshield", userId, legs), kind: "unshield", hedgeId: hedge?.id ?? null, feesUsd: fees.toFixed(4) };
+  return { ...planHeader("unshield", userId, legs), kind: "unshield", hedgeId: hedge?.id ?? null, feesUsd: fees.toFixed(4), maxOrderUsd: dec(cap).toFixed(2) };
 }
