@@ -29,6 +29,9 @@ export interface BellView {
   cards: BellCard[];
 }
 
+/** ± band for an estimate during a closure of this kind, calibrated on past closures. */
+export const bandFor = (kind: ClosureKind) => gapBand(sigmaFor(kind));
+
 function sigmaFor(kind: ClosureKind) {
   const s = calibration.summary;
   const bp = (v: string | null | undefined) => (v ? dec(v).div(10_000) : undefined);
