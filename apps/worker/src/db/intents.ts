@@ -1,0 +1,99 @@
+import type { ActiveMandate } from "@glade/engine";
+import { schema, type Db } from "@glade/db";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import type { ExecResult } from "../executor/types";
+import { explainResult, type ClaimedIntent } from "../jobs/intent-runner";
+import type { StoredPasskey } from "../policy/authorize";
+import { logDecision, publish } from "./repos";
+
+const { intents, orders, hedges, passkeys, mandates } = schema;
+
+/** Atomically claim pending intents (oldest first); concurrent workers never claim the same row. */
+export async function claimIntents(db: Db, limit: number): Promise<ClaimedIntent[]> {
+  const rows = await db.execute<{ id: string }>(sql`
+    update intents set status = 'executing'
+    where id in (
+      select id from intents where status = 'pending' order by created_at limit ${limit} for update skip locked
+    )
+    returning id`);
+  const ids = (rows as unknown as { id: string }[]).map((r) => r.id);
+  if (ids.length === 0) return [];
+  const full = await db.select().from(intents).where(inArray(intents.id, ids));
+  return full
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map((r) => ({
+      id: r.id,
+      userId: r.userId,
+      kind: r.kind,
+      assetId: r.assetId,
+      side: r.side,
+      qty: r.qty,
+      qtyUnit: r.qtyUnit as "base" | "quote",
+      leverage: r.leverage,
+      reduceOnly: r.reduceOnly,
+      planHash: r.planHash,
+      inputs: r.inputs,
+      hedgeId: r.hedgeId,
+      reason: r.reason,
+    }));
+}
+
+export async function recordIntentResult(db: Db, engineVersion: string, i: ClaimedIntent, r: ExecResult): Promise<void> {
+  // The executor sets the intent status itself; this keeps a status for paths that threw before it could.
+  if (r.outcome === "failed") await db.update(intents).set({ status: "failed" }).where(and(eq(intents.id, i.id), eq(intents.status, "executing")));
+
+  if (i.hedgeId && r.outcome === "complete") {
+    if (i.kind === "open" || i.kind === "increase") {
+      await db.update(hedges).set({ status: "active", openedAt: new Date() }).where(and(eq(hedges.id, i.hedgeId), inArray(hedges.status, ["planned", "active"])));
+    } else if (i.kind === "close") {
+      const open = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(intents)
+        .where(and(eq(intents.hedgeId, i.hedgeId), eq(intents.kind, "close"), inArray(intents.status, ["pending", "executing"])));
+      if ((open[0]?.n ?? 0) === 0) await db.update(hedges).set({ status: "closed", closedAt: new Date() }).where(eq(hedges.id, i.hedgeId));
+      else await db.update(hedges).set({ status: "unwinding" }).where(eq(hedges.id, i.hedgeId));
+    }
+  }
+  if (i.hedgeId && i.kind === "open" && r.outcome !== "complete" && r.outcome !== "unknown") {
+    await db.update(hedges).set({ status: "failed" }).where(and(eq(hedges.id, i.hedgeId), eq(hedges.status, "planned")));
+  }
+
+  const explanation = explainResult(i, r);
+  await logDecision(db, {
+    userId: i.userId,
+    engineVersion,
+    action: `intent_${r.outcome}`,
+    explanation,
+    inputs: { intentId: i.id, kind: i.kind, assetId: i.assetId, side: i.side, qty: i.qty, reduceOnly: i.reduceOnly },
+    outputs: r,
+  });
+  await publish(db, { type: "intent", data: { userId: i.userId, intentId: i.id, outcome: r.outcome, explanation } });
+}
+
+export function policyQueries(db: Db) {
+  return {
+    async getPasskey(userId: string, credentialId: string): Promise<StoredPasskey | null> {
+      const [p] = await db
+        .select()
+        .from(passkeys)
+        .where(and(eq(passkeys.userId, userId), eq(passkeys.credentialId, credentialId)));
+      return p ? { credentialId: p.credentialId, publicKey: p.publicKey, transports: p.transports } : null;
+    },
+    async getActiveMandate(userId: string): Promise<ActiveMandate | null> {
+      const [m] = await db
+        .select()
+        .from(mandates)
+        .where(and(eq(mandates.userId, userId), eq(mandates.status, "active")));
+      return m ? { status: m.status, allowedPerps: m.allowedPerps, leverageMax: m.leverageMax, maxTradesDay: m.maxTradesDay } : null;
+    },
+    async tradesToday(userId: string, now: Date): Promise<number> {
+      const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+      const [r] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(orders)
+        .innerJoin(intents, eq(orders.intentId, intents.id))
+        .where(and(eq(intents.userId, userId), eq(orders.status, "complete"), gte(orders.finalAt, midnight)));
+      return r?.n ?? 0;
+    },
+  };
+}
