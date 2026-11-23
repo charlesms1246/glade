@@ -10,6 +10,7 @@ import { BELL_WATCHLIST, loadBellSigma, TICK_MS } from "./config";
 import { bellRepo, logDecision, publish, tryLeaderLock } from "./db/repos";
 import { PriceCache } from "./market/price-cache";
 import { MarketStream } from "./market/stream";
+import { startTrading } from "./trading";
 
 const env = loadEnv();
 const log = pino({ name: "glade-worker", level: process.env.LOG_LEVEL ?? "info" });
@@ -98,10 +99,13 @@ async function tick() {
 
 const timer = setInterval(tick, TICK_MS);
 void tick();
+// Execution is paper only: fills are simulated on live prices, and production orders are refused in code.
+const stopTrading = startTrading({ db, tm, tokens, env, cache, stream, log });
 log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(tokens) }, "worker started");
 
 async function shutdown() {
   clearInterval(timer);
+  stopTrading();
   stream.stop();
   await sql.end({ timeout: 5 });
   process.exit(0);
