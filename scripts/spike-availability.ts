@@ -1,11 +1,11 @@
 // Spike: which product types and asset classes True Markets allows from this machine's IP. Read-only.
 // Run it from every place the worker might be hosted.
 //   pnpm exec tsx scripts/spike-availability.ts
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { apiKeyMinter, createTmClient, TokenManager, type OrgKey } from "@glade/tm-client";
 
-process.loadEnvFile(".env");
+if (existsSync(".env")) process.loadEnvFile(".env");
 const env = loadEnv();
 const restBase = TM_BASE_URLS[env.TM_ENV].rest;
 const key = JSON.parse(readFileSync(env.TM_ORG_KEY_FILE, "utf8")) as OrgKey;

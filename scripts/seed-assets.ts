@@ -1,11 +1,12 @@
 // Loads the True Markets asset catalog into asset_registry for TM_ENV. Read-only against True Markets; idempotent.
 //   pnpm seed:assets
+import { existsSync } from "node:fs";
 import { createDb, schema } from "@glade/db";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { createTmClient, type AssetItem } from "@glade/tm-client";
 import { sql } from "drizzle-orm";
 
-process.loadEnvFile(".env");
+if (existsSync(".env")) process.loadEnvFile(".env");
 const env = loadEnv();
 const tm = createTmClient({ restBase: TM_BASE_URLS[env.TM_ENV].rest });
 const { db, sql: conn } = createDb(env.DATABASE_URL, { max: 2 });

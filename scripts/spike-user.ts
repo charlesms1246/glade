@@ -1,7 +1,7 @@
 // Spike: onboard one demo Glade user. Creates (or reuses) a Gateway user in the organization with a
 // per-user signer key, then prints the deposit addresses. Idempotent on --name. Moves no funds.
 //   pnpm exec tsx scripts/spike-user.ts --name demo-1
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createDb, schema } from "@glade/db";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { parseMasterKey } from "@glade/stamp";
@@ -10,7 +10,7 @@ import { eq } from "drizzle-orm";
 import { onboardingRepo } from "../apps/worker/src/db/repos";
 import { onboardUser } from "../apps/worker/src/onboarding/onboard";
 
-process.loadEnvFile(".env");
+if (existsSync(".env")) process.loadEnvFile(".env");
 const env = loadEnv();
 const i = process.argv.indexOf("--name");
 const name = i === -1 ? "demo-1" : process.argv[i + 1]!;
