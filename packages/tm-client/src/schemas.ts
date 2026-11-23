@@ -152,3 +152,12 @@ export const perpHistoryResponse = z
       .optional(),
   })
   .passthrough();
+
+export const availabilityResponse = z
+  .object({
+    country: z.string(),
+    allowed_product_types: z.array(z.string()),
+    allowed_asset_classes: z.array(z.string()),
+  })
+  .passthrough();
+export type Availability = z.infer<typeof availabilityResponse>;

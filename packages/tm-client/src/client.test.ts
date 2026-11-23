@@ -187,3 +187,14 @@ describe("public reads", () => {
     expect(() => client.forUser("u1")).toThrow(/org token/);
   });
 });
+
+describe("availability", () => {
+  it("parses the caller country and allowlists", async () => {
+    const t = setup({
+      "GET /v1/gateway/assets/availability": () => json(200, { country: "PT", allowed_product_types: ["spot", "perp"], allowed_asset_classes: ["crypto", "stock"] }),
+    });
+    const a = await t.client.availability();
+    expect(a.allowed_product_types).toContain("perp");
+    expect(t.server.calls.at(-1)!.headers.get("TM-On-Behalf-Of")).toBeNull();
+  });
+});

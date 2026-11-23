@@ -86,6 +86,12 @@ export function createTmClient(opts: TmClientOptions) {
       return unwrap(r, s.perpHistoryResponse, "GET", "/v1/defi/market/market-data/perp/history");
     },
 
+    /** Product types and asset classes tradeable from this caller's IP country. */
+    async availability() {
+      const r = await (opts.tokens ? gateway : publicGateway).GET("/assets/availability");
+      return unwrap(r, s.availabilityResponse, "GET", "/assets/availability");
+    },
+
     // ---- org-scoped (never send TM-On-Behalf-Of) ---------------------------
     async organizationId() {
       return requireTokens().organizationId();
