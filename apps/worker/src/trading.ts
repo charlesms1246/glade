@@ -18,6 +18,8 @@ import { unwindDrafts } from "./jobs/bell-unwind";
 import { runPendingIntents, type ClaimedIntent } from "./jobs/intent-runner";
 import { runOnboardingJob } from "./jobs/onboarding-job";
 import { runFloorJob } from "./floor/job";
+import { equityDb } from "./equity/db";
+import { runEquityJob } from "./equity/job";
 import { ratesFromAssets, runFundingJob } from "./funding/job";
 import type { PriceCache } from "./market/price-cache";
 import type { MarketStream } from "./market/stream";
@@ -287,6 +289,13 @@ export function startTrading(d: TradingDeps): () => void {
         new Date(),
       );
       if (r.reported.length) log.info({ hedges: r.reported }, "bell_reported");
+    }),
+  );
+
+  timers.push(
+    every("equity", 60_000, async () => {
+      const r = await runEquityJob({ ...equityDb(db), portfolio: (u) => venue.forUser(u).portfolio(), log: (event, fields) => log.warn(fields, event) }, new Date());
+      if (r.failed.length) log.warn({ failed: r.failed.length }, "equity_snapshot_failures");
     }),
   );
 
