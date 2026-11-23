@@ -134,3 +134,14 @@ describe("mandate authenticity", () => {
     expect(Buffer.from(d.challenges[0]!, "base64url").toString("hex")).toBe(mandateHash(terms));
   });
 });
+
+describe("mandate cache", () => {
+  it("re-checks a cached mandate whose terms were edited later", async () => {
+    const auto = () => row({ planHash: null, inputs: { source: "automation", notionalUsd: "10", beta: "1" } });
+    let current = signedMandate();
+    const d = deps({ getActiveMandate: async () => current, verifiedMandates: new Set() });
+    expect((await authorizeIntent(auto(), d, new Date())).ok).toBe(true);
+    current = { ...current, terms: { ...terms, leverageMax: "20" } };
+    expect((await authorizeIntent(auto(), d, new Date())).ok).toBe(false);
+  });
+});

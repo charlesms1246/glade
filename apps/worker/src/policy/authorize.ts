@@ -63,7 +63,7 @@ export interface PolicyDeps {
   rpID: string;
   getPasskey: (userId: string, credentialId: string) => Promise<StoredPasskey | null>;
   getActiveMandate: (userId: string) => Promise<SignedMandate | null>;
-  /** Mandate ids already proven authentic in this process. */
+  /** `${mandateId}:${hash}` pairs already proven authentic in this process. */
   verifiedMandates?: Set<string>;
   tradesToday: (userId: string, now: Date) => Promise<number>;
   riskyValue: (userId: string) => Promise<string>;
@@ -157,9 +157,11 @@ const approvalSchema = z.object({ assertion: z.unknown(), credentialId: z.string
  * A mandate row edited after signing (wider perps, higher leverage) fails here and automation stops.
  */
 export async function mandateIsAuthentic(m: SignedMandate, userId: string, deps: PolicyDeps): Promise<boolean> {
-  if (deps.verifiedMandates?.has(m.id)) return true;
   const hash = mandateHash(m.terms);
   if (hash !== m.storedHash) return false;
+  // Keyed by the recomputed hash too, so terms edited after a successful check are re-verified (and fail).
+  const cacheKey = `${m.id}:${hash}`;
+  if (deps.verifiedMandates?.has(cacheKey)) return true;
   const a = approvalSchema.safeParse(m.approval);
   if (!a.success) return false;
   const pk = await deps.getPasskey(userId, a.data.credentialId);
@@ -177,6 +179,6 @@ export async function mandateIsAuthentic(m: SignedMandate, userId: string, deps:
   } catch {
     return false;
   }
-  deps.verifiedMandates?.add(m.id);
+  deps.verifiedMandates?.add(cacheKey);
   return true;
 }
