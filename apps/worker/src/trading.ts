@@ -90,6 +90,8 @@ export function startTrading(d: TradingDeps): () => void {
           getActiveMandate: policy.getActiveMandate,
           tradesToday: policy.tradesToday,
           riskyValue,
+          assetType: policy.assetType,
+          liveSiblings: policy.liveSiblings,
           verifiedMandates,
         },
         new Date(),
@@ -164,16 +166,17 @@ export function startTrading(d: TradingDeps): () => void {
   };
 
   const busy = new Set<string>();
-  const every = (name: string, ms: number, fn: () => Promise<unknown>) => {
+  // `lock` lets jobs share one mutex: the intent runner and the reconciler both execute orders.
+  const every = (name: string, ms: number, fn: () => Promise<unknown>, lock = name) => {
     const run = async () => {
-      if (busy.has(name)) return;
-      busy.add(name);
+      if (busy.has(lock)) return;
+      busy.add(lock);
       try {
         await fn();
       } catch (e) {
         log.error({ job: name, error: String(e).slice(0, 300) }, "job_failed");
       } finally {
-        busy.delete(name);
+        busy.delete(lock);
       }
     };
     void run();
@@ -182,15 +185,26 @@ export function startTrading(d: TradingDeps): () => void {
 
   const paused = () => env.GLADE_PAUSE_ALL;
   const timers = [
-    every("intents", 3_000, async () => {
-      if (paused()) return;
-      const done = await runPendingIntents(runnerDeps((n) => claimIntents(db, n)));
-      if (done.length) log.info({ results: done.map((r) => r.outcome) }, "intents_run");
-    }),
-    every("reconcile", 60_000, async () => {
-      if (paused()) return;
-      await runPendingIntents(runnerDeps((n) => reclaimStale(db, STALE_INTENT_MS, n)));
-    }),
+    every(
+      "intents",
+      3_000,
+      async () => {
+        if (paused()) return;
+        // One at a time, so no claimed intent waits long enough to look stale to the reconciler.
+        const done = await runPendingIntents(runnerDeps((n) => claimIntents(db, n)), 1);
+        if (done.length) log.info({ results: done.map((r) => r.outcome) }, "intents_run");
+      },
+      "execution",
+    ),
+    every(
+      "reconcile",
+      60_000,
+      async () => {
+        if (paused()) return;
+        await runPendingIntents(runnerDeps((n) => reclaimStale(db, STALE_INTENT_MS, n)));
+      },
+      "execution",
+    ),
     every("bell_unwind", 15_000, async () => {
       for (const h of await dueBellHedges(db, new Date())) {
         const drafts = unwindDrafts(h);

@@ -1,13 +1,13 @@
 import { schema, type Db } from "@glade/db";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import type { ExecResult } from "../executor/types";
 import type { CloseIntentDraft } from "../jobs/bell-unwind";
 import { explainResult, type ClaimedIntent } from "../jobs/intent-runner";
-import type { SignedMandate, StoredPasskey } from "../policy/authorize";
+import type { IntentRow, SignedMandate, StoredPasskey } from "../policy/authorize";
 import { Decimal } from "@glade/shared";
 import { logDecision, publish } from "./repos";
 
-const { intents, orders, hedges, passkeys, mandates } = schema;
+const { intents, orders, hedges, passkeys, mandates, assetRegistry } = schema;
 
 /** Atomically claim pending intents (oldest first); concurrent workers never claim the same row. */
 export async function claimIntents(db: Db, limit: number): Promise<ClaimedIntent[]> {
@@ -109,13 +109,43 @@ export function policyQueries(db: Db) {
         approval: m.webauthnAssertion,
       };
     },
+    /** Completed automation orders since UTC midnight; the user's own trades do not use the mandate's cap. */
     async tradesToday(userId: string, now: Date): Promise<number> {
       const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
       const [r] = await db
         .select({ n: sql<number>`count(*)::int` })
         .from(orders)
         .innerJoin(intents, eq(orders.intentId, intents.id))
-        .where(and(eq(intents.userId, userId), eq(orders.status, "complete"), gte(orders.finalAt, midnight)));
+        .where(
+          and(
+            eq(intents.userId, userId),
+            eq(orders.status, "complete"),
+            gte(orders.finalAt, midnight),
+            sql`${intents.inputs}->>'source' = 'automation'`,
+          ),
+        );
+      return r?.n ?? 0;
+    },
+    async assetType(assetId: string): Promise<"spot" | "perp" | null> {
+      const [r] = await db.select({ type: assetRegistry.type }).from(assetRegistry).where(eq(assetRegistry.assetId, assetId)).limit(1);
+      return r?.type === "spot" || r?.type === "perp" ? r.type : null;
+    },
+    async liveSiblings(row: IntentRow): Promise<number> {
+      if (!row.planHash) return 0;
+      const [r] = await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(intents)
+        .where(
+          and(
+            eq(intents.planHash, row.planHash),
+            eq(intents.assetId, row.assetId),
+            eq(intents.side, row.side),
+            eq(intents.reduceOnly, row.reduceOnly),
+            eq(intents.qty, row.qty),
+            ne(intents.id, row.id),
+            inArray(intents.status, ["pending", "executing", "done"]),
+          ),
+        );
       return r?.n ?? 0;
     },
   };

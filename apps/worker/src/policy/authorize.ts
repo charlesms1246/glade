@@ -12,7 +12,8 @@ const legSchema = z.object({
   reduceOnly: z.boolean(),
   notionalUsd: decStr,
   beta: decStr,
-  leverage: z.union([z.string(), z.number()]).optional(),
+  leverage: z.union([z.string(), z.number()]).nullish(),
+  qtyUnit: z.enum(["base", "quote"]).optional(),
 });
 const planSchema = z.object({ assetIds: z.array(z.string()).min(1), legs: z.array(legSchema).min(1) }).passthrough();
 
@@ -33,6 +34,7 @@ export interface IntentRow {
   assetId: string;
   side: "buy" | "sell";
   qty: string;
+  qtyUnit: "base" | "quote";
   leverage: string | null;
   reduceOnly: boolean;
   planHash: string | null;
@@ -67,6 +69,10 @@ export interface PolicyDeps {
   verifiedMandates?: Set<string>;
   tradesToday: (userId: string, now: Date) => Promise<number>;
   riskyValue: (userId: string) => Promise<string>;
+  /** Product type of an asset from the registry; null when unknown. */
+  assetType: (assetId: string) => Promise<"spot" | "perp" | null>;
+  /** Other live (pending, executing or done) intents of this plan that match the same leg. */
+  liveSiblings: (row: IntentRow) => Promise<number>;
   verify?: typeof verifyAuthenticationResponse;
 }
 
@@ -77,7 +83,11 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
   const parsed = inputsSchema.safeParse(row.inputs);
   if (!parsed.success) return deny("intent inputs are malformed");
   const inp = parsed.data;
-  const spot = row.kind === "spot_buy" || row.kind === "spot_sell";
+  const spotKind = row.kind === "spot_buy" || row.kind === "spot_sell";
+  const type = await deps.assetType(row.assetId);
+  if (!type) return deny("unknown asset");
+  if ((type === "spot") !== spotKind) return deny("intent kind does not match the asset type");
+  const spot = type === "spot";
 
   let assertion: { planHash: string; approvedAssetIds: string[] } | null = null;
   let beta = inp.beta ?? "1";
@@ -88,10 +98,21 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
     const hash = planHash(inp.plan);
     if (hash !== row.planHash || hash !== inp.planHash) return deny("plan hash does not match the approved plan");
 
-    const leg = plan.data.legs.find(
-      (l) => l.assetId === row.assetId && l.side === row.side && l.reduceOnly === row.reduceOnly && dec(l.qty).eq(dec(row.qty)),
+    const sameLev = (l: z.infer<typeof legSchema>) =>
+      l.leverage == null ? row.leverage === null : row.leverage !== null && dec(l.leverage).eq(dec(row.leverage));
+    const matches = plan.data.legs.filter(
+      (l) =>
+        l.assetId === row.assetId &&
+        l.side === row.side &&
+        l.reduceOnly === row.reduceOnly &&
+        (l.qtyUnit ?? "base") === row.qtyUnit &&
+        sameLev(l) &&
+        dec(l.qty).eq(dec(row.qty)),
     );
+    const leg = matches[0];
     if (!leg) return deny("intent is not a leg of the approved plan");
+    // One approval covers each leg once: a replayed or duplicated intent for the same leg is refused.
+    if ((await deps.liveSiblings(row)) >= matches.length) return deny("this approved leg was already used");
     if (!dec(leg.notionalUsd).eq(dec(inp.notionalUsd))) return deny("intent notional differs from the approved plan");
     beta = leg.beta;
 

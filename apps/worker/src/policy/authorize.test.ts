@@ -18,6 +18,7 @@ const row = (over: Partial<IntentRow> = {}, inputs: Record<string, unknown> = {}
   assetId: "perp-nvda",
   side: "sell",
   qty: "0.06",
+  qtyUnit: "base",
   leverage: "2",
   reduceOnly: false,
   planHash: hash,
@@ -38,6 +39,8 @@ function deps(over: Partial<PolicyDeps> = {}): PolicyDeps & { challenges: string
     getActiveMandate: async () => null,
     tradesToday: async () => 0,
     riskyValue: async () => "13",
+    assetType: async (id) => (id === "perp-nvda" ? "perp" : id === "spot-nvda" ? "spot" : null),
+    liveSiblings: async () => 0,
     verify: (async (o: { expectedChallenge: unknown }) => {
       challenges.push(String(o.expectedChallenge));
       return { verified: true };
@@ -143,5 +146,25 @@ describe("mandate cache", () => {
     expect((await authorizeIntent(auto(), d, new Date())).ok).toBe(true);
     current = { ...current, terms: { ...terms, leverageMax: "20" } };
     expect((await authorizeIntent(auto(), d, new Date())).ok).toBe(false);
+  });
+});
+
+describe("leg binding", () => {
+  it("refuses an approved leg used a second time", async () => {
+    expect(await authorizeIntent(row(), deps({ liveSiblings: async () => 1 }), new Date())).toEqual({
+      ok: false,
+      reasons: ["this approved leg was already used"],
+    });
+  });
+
+  it("refuses a flipped quantity unit or a different leverage", async () => {
+    expect((await authorizeIntent(row({ qtyUnit: "quote" }), deps(), new Date())).ok).toBe(false);
+    expect((await authorizeIntent(row({ leverage: "3" }), deps(), new Date())).ok).toBe(false);
+    expect((await authorizeIntent(row({ leverage: null }), deps(), new Date())).ok).toBe(false);
+  });
+
+  it("derives the instrument from the registry, not the intent kind", async () => {
+    expect(await authorizeIntent(row({ kind: "spot_buy" }), deps(), new Date())).toEqual({ ok: false, reasons: ["intent kind does not match the asset type"] });
+    expect(await authorizeIntent(row({ assetId: "unknown" }), deps(), new Date())).toEqual({ ok: false, reasons: ["unknown asset"] });
   });
 });
