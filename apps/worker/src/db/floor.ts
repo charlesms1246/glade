@@ -93,3 +93,19 @@ export async function pendingOnboarding(db: Db, limit: number): Promise<{ id: st
   const noPaper = await usersWithoutPaperAccount(db, limit);
   return [...new Set([...noTm.map((r) => r.id), ...noPaper])].slice(0, limit).map((id) => ({ id }));
 }
+
+/**
+ * The Floor's own short size per perp: filled automation sells minus reduce-only buys on the user's
+ * Floor hedge. Shield and Bell hedges on the same perp are not counted, so Floor never trims them.
+ */
+export async function floorHedgeSizes(db: Db, userId: string): Promise<Record<string, string>> {
+  const rows = await db.execute<{ asset_id: string; size: string }>(sql`
+    select i.asset_id,
+      sum(case when i.side = 'sell' then o.executed_qty else -o.executed_qty end)::text as size
+    from intents i
+    join hedges h on h.id = i.hedge_id and h.mode = 'floor'
+    join orders o on o.intent_id = i.id and o.status = 'complete'
+    where i.user_id = ${userId}
+    group by i.asset_id`);
+  return Object.fromEntries((rows as unknown as { asset_id: string; size: string }[]).map((r) => [r.asset_id, r.size]));
+}

@@ -60,3 +60,18 @@ describe("Floor job", () => {
     expect((await runFloorJob(d, now)).traded).toEqual(["u"]);
   });
 });
+
+describe("at-risk logging", () => {
+  it("logs a held at-risk state at most every 30 minutes", async () => {
+    // Cooldown blocks trading, cushion stays under 3%: an at-risk state with no trade.
+    const cooling = { ...user, state: { ...user.state, lastTradeAt: new Date(now.getTime() - 1000) } };
+    const atRisk: FloorInputs = { ...thin, equity: "855" };
+    const memo = new Map<string, number>();
+    const { d, calls } = deps({ activeUsers: async () => [cooling], inputs: async () => atRisk, atRiskLoggedAt: memo });
+    await runFloorJob(d, now);
+    await runFloorJob(d, new Date(now.getTime() + 60_000));
+    expect(calls.logged).toBe(1);
+    await runFloorJob(d, new Date(now.getTime() + 31 * 60_000));
+    expect(calls.logged).toBe(2);
+  });
+});

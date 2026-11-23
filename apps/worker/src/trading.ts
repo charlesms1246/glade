@@ -8,7 +8,7 @@ import { parseMasterKey } from "@glade/stamp";
 import type { TmClient, TokenManager } from "@glade/tm-client";
 import { and, eq } from "drizzle-orm";
 import type { Logger } from "pino";
-import { activeFloorUsers, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState } from "./db/floor";
+import { activeFloorUsers, floorHedgeSizes, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState } from "./db/floor";
 import { claimIntents, dueBellHedges, insertCloseIntents, policyQueries, reclaimStale, recordIntentResult } from "./db/intents";
 import { executorRepo, logDecision, onboardingRepo, publish } from "./db/repos";
 import { createExecutor } from "./executor";
@@ -140,12 +140,13 @@ export function startTrading(d: TradingDeps): () => void {
 
   const floorInputs = async (userId: string) => {
     const u = venue.forUser(userId);
-    const [p, pos, perps] = await Promise.all([u.portfolio(), u.positions(), perpsList()]);
+    const [p, pos, perps, own] = await Promise.all([u.portfolio(), u.positions(), perpsList(), floorHedgeSizes(db, userId)]);
     const holdings = p.balances
       .filter((b) => !b.stable && b.asset_id && b.economic_asset_id && b.value)
       .map((b) => ({ asset_id: b.asset_id!, economic_asset_id: b.economic_asset_id!, symbol: b.symbol, value: b.value! }));
     if (holdings.length === 0) return null;
-    const wanted = new Set([...holdings.map((h) => normalizeSymbol(h.symbol)), "SP500", "XYZ100"]);
+    const bases = new Set(perps.map((x) => x.symbol.toUpperCase()));
+    const wanted = new Set([...holdings.map((h) => normalizeSymbol(h.symbol, bases)), "SP500", "XYZ100"]);
     const marks: Record<string, string> = {};
     for (const pr of perps.filter((x) => wanted.has(x.symbol.toUpperCase()))) {
       try {
@@ -157,9 +158,15 @@ export function startTrading(d: TradingDeps): () => void {
     return {
       equity: p.total_usd ?? "0",
       holdings,
+      // Only the Floor's own share of each short, never more than the actual position.
       positions: pos.positions
-        .filter((x) => x.side === "short" && x.asset_id && x.size && x.mark_price)
-        .map((x) => ({ asset_id: x.asset_id!, size: x.size!, mark_price: x.mark_price! })),
+        .filter((x) => x.side === "short" && x.asset_id && x.size && x.mark_price && own[x.asset_id])
+        .map((x) => ({
+          asset_id: x.asset_id!,
+          size: Decimal.max(0, Decimal.min(dec(own[x.asset_id!]!), dec(x.size!))).toString(),
+          mark_price: x.mark_price!,
+        }))
+        .filter((x) => dec(x.size).gt(0)),
       perps: perps.map((x) => ({ asset_id: x.asset_id, symbol: x.symbol, ...(x.max_leverage ? { max_leverage: x.max_leverage } : {}) })),
       marks,
     };
@@ -184,6 +191,7 @@ export function startTrading(d: TradingDeps): () => void {
   };
 
   const paused = () => env.GLADE_PAUSE_ALL;
+  const atRiskLoggedAt = new Map<string, number>();
   const timers = [
     every(
       "intents",
@@ -226,6 +234,7 @@ export function startTrading(d: TradingDeps): () => void {
             ),
           params: { band: String(env.FLOOR_BAND), cooldownSec: env.FLOOR_COOLDOWN_SEC, minNotionalUsd: String(env.MIN_PERP_NOTIONAL_USD), leverage: String(env.DEFAULT_LEVERAGE), sizeStep: () => PERP_SIZE_STEP },
           paused,
+          atRiskLoggedAt,
           log: (event, fields) => log.warn(fields, event),
         },
         new Date(),

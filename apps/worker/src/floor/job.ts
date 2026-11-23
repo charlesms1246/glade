@@ -18,10 +18,13 @@ export interface FloorJobDeps {
   params: FloorParams;
   /** Kill switch: no new intents while set. */
   paused: () => boolean;
+  /** Last time a "target at risk" decision was logged per user; throttles the log. */
+  atRiskLoggedAt?: Map<string, number>;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
+const AT_RISK_LOG_EVERY_MS = 30 * 60_000;
 
 export async function runFloorJob(deps: FloorJobDeps, now: Date): Promise<{ traded: string[]; idle: string[] }> {
   const traded: string[] = [];
@@ -49,7 +52,12 @@ export async function runFloorJob(deps: FloorJobDeps, now: Date): Promise<{ trad
         traded.push(u.userId);
       } else {
         await deps.saveState(u.userId, { peak, lastTradeAt: u.state.lastTradeAt, tradesDay: today, tradesToday });
-        if (d.cppi.floorAtRisk) await deps.logDecision(u.userId, d);
+        const last = deps.atRiskLoggedAt?.get(u.userId);
+        if (d.cppi.floorAtRisk && (last === undefined || now.getTime() - last >= AT_RISK_LOG_EVERY_MS)) {
+          await deps.logDecision(u.userId, d);
+          deps.atRiskLoggedAt?.set(u.userId, now.getTime());
+        }
+        if (!d.cppi.floorAtRisk) deps.atRiskLoggedAt?.delete(u.userId);
         idle.push(u.userId);
       }
     } catch (e) {

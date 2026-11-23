@@ -21,7 +21,7 @@ export interface FloorMandate {
 export interface FloorInputs {
   equity: string;
   holdings: { asset_id: string; economic_asset_id: string; symbol: string; value: string }[];
-  /** Open short perp positions. */
+  /** The Floor's own short per perp (not the user's Shield or Bell hedges), with the current mark. */
   positions: { asset_id: string; size: string; mark_price: string }[];
   perps: readonly PerpListing[];
   /** Latest perp mark by perp asset id (for legs without a position yet). */
@@ -56,7 +56,9 @@ export interface FloorDecision {
 
 /** One Floor rebalance decision. Pure: the caller persists the new peak and trade bookkeeping. */
 export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs, p: FloorParams, now: Date): FloorDecision {
-  const groups = groupHoldings(inp.holdings);
+  // Perp symbols are the known bases, so issuer tokens (AMDX, NVDAon) map to their stock.
+  const knownBases = new Set(inp.perps.map((x) => x.symbol.toUpperCase()));
+  const groups = groupHoldings(inp.holdings, knownBases);
   const legs = groups
     .map((g) => ({ g, leg: chooseInstrument(g, inp.perps) }))
     .filter((x): x is { g: (typeof groups)[number]; leg: NonNullable<ReturnType<typeof chooseInstrument>> } => x.leg !== null);

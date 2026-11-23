@@ -73,3 +73,17 @@ describe("decideFloor", () => {
     );
   });
 });
+
+describe("issuer tokens in Floor", () => {
+  it("hedges an xStocks holding with its matching perp", () => {
+    const inp = {
+      equity: "900",
+      holdings: [{ asset_id: "a", economic_asset_id: "e", symbol: "AMDX", value: "900" }],
+      positions: [],
+      perps: [{ asset_id: "perp-amd", symbol: "AMD" }, { asset_id: "perp-sp", symbol: "SP500" }],
+      marks: { "perp-amd": "100" },
+    };
+    const d = decideFloor({ ...mandate, allowedPerps: ["perp-amd"] }, state, inp, params, now);
+    expect(d.drafts[0]?.assetId).toBe("perp-amd");
+  });
+});
