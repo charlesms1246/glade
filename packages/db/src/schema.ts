@@ -219,13 +219,14 @@ export const bellSnapshots = pgTable(
   "bell_snapshots",
   {
     sessionId: uuid("session_id").notNull().references(() => bellSessions.id),
-    economicAssetId: text("economic_asset_id").notNull(),
+    // Normalised group symbol (e.g. NVDA for NVDAC/NVDAx holdings).
+    symbol: text("symbol").notNull(),
     closePx: money("close_px").notNull(),
     markPx: money("mark_px").notNull(),
     basis: money("basis").notNull(),
     createdAt: ts("created_at").notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.sessionId, t.economicAssetId] })],
+  (t) => [primaryKey({ columns: [t.sessionId, t.symbol] })],
 );
 
 export const bellReports = pgTable(

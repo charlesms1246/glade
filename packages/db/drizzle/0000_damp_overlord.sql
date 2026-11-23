@@ -52,12 +52,12 @@ CREATE TABLE "bell_sessions" (
 --> statement-breakpoint
 CREATE TABLE "bell_snapshots" (
 	"session_id" uuid NOT NULL,
-	"economic_asset_id" text NOT NULL,
+	"symbol" text NOT NULL,
 	"close_px" numeric(38, 18) NOT NULL,
 	"mark_px" numeric(38, 18) NOT NULL,
 	"basis" numeric(38, 18) NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
-	CONSTRAINT "bell_snapshots_session_id_economic_asset_id_pk" PRIMARY KEY("session_id","economic_asset_id")
+	CONSTRAINT "bell_snapshots_session_id_symbol_pk" PRIMARY KEY("session_id","symbol")
 );
 --> statement-breakpoint
 CREATE TABLE "decisions" (

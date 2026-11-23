@@ -123,6 +123,9 @@ importers:
       decimal.js:
         specifier: ^10.6.0
         version: 10.6.0
+      drizzle-orm:
+        specifier: ^0.45.4
+        version: 0.45.4(postgres@4.1.1)
       pino:
         specifier: ^10.4.0
         version: 10.4.0

@@ -1,5 +1,5 @@
 {
-  "id": "cf08d6ad-85a6-4179-a911-614499736f0c",
+  "id": "1ec7bcb8-b58e-4019-9d30-83a021a50010",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "version": "7",
   "dialect": "postgresql",
@@ -341,8 +341,8 @@
           "primaryKey": false,
           "notNull": true
         },
-        "economic_asset_id": {
-          "name": "economic_asset_id",
+        "symbol": {
+          "name": "symbol",
           "type": "text",
           "primaryKey": false,
           "notNull": true
@@ -390,11 +390,11 @@
         }
       },
       "compositePrimaryKeys": {
-        "bell_snapshots_session_id_economic_asset_id_pk": {
-          "name": "bell_snapshots_session_id_economic_asset_id_pk",
+        "bell_snapshots_session_id_symbol_pk": {
+          "name": "bell_snapshots_session_id_symbol_pk",
           "columns": [
             "session_id",
-            "economic_asset_id"
+            "symbol"
           ]
         }
       },
