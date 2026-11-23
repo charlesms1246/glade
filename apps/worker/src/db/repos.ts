@@ -18,6 +18,7 @@ export function executorRepo(db: Db): ExecutorRepo {
     fee: o.fee,
     explorerUrl: o.explorerUrl,
     raw: o.raw,
+    createdAtMs: o.createdAt.getTime(),
   });
   return {
     async listOrders(intentId) {
