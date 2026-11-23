@@ -21,6 +21,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.39.5",
+    "@glade/calendar": "workspace:^",
+    "@glade/db": "workspace:^",
+    "@glade/engine": "workspace:^",
+    "@glade/shared": "workspace:^",
+    "@glade/stamp": "workspace:^",
+    "@glade/tm-client": "workspace:^",
     "@types/node": "^22",
     "eslint": "^9",
     "fast-check": "^4.11.0",
