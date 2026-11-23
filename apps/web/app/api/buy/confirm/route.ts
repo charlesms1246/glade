@@ -3,10 +3,11 @@ import { fail, json, withUser } from "@/lib/server/api";
 import type { BuyPlan } from "@/lib/server/buy";
 import { db } from "@/lib/server/db";
 import { approvePlan, intentInputs, type ApprovalBody } from "@/lib/server/plans";
+import { readJson } from "@/lib/server/body";
 
 export async function POST(req: Request) {
   return withUser(async (uid) => {
-    const a = await approvePlan(uid, (await req.json().catch(() => null)) as ApprovalBody<BuyPlan> | null);
+    const a = await approvePlan(uid, (await readJson(req)) as ApprovalBody<BuyPlan> | null);
     if (!a.ok) return fail(400, a.error);
     const { plan } = a;
     const leg = plan.legs[0];

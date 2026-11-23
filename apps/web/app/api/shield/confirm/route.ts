@@ -6,12 +6,13 @@ import { fail, json, withUser } from "@/lib/server/api";
 import { db } from "@/lib/server/db";
 import { approvePlan, intentInputs, type ApprovalBody } from "@/lib/server/plans";
 import type { ShieldPlan } from "@/lib/server/shield";
+import { readJson } from "@/lib/server/body";
 
 const MAX_LEVERAGE = 3;
 
 export async function POST(req: Request) {
   return withUser(async (uid) => {
-    const a = await approvePlan(uid, (await req.json().catch(() => null)) as ApprovalBody<ShieldPlan> | null);
+    const a = await approvePlan(uid, (await readJson(req)) as ApprovalBody<ShieldPlan> | null);
     if (!a.ok) return fail(400, a.error);
     const { plan } = a;
     if (plan.kind !== "shield" && plan.kind !== "bell") return fail(400, "Not a shield plan.");

@@ -4,11 +4,12 @@ import { fail, json } from "@/lib/server/api";
 import { db } from "@/lib/server/db";
 import { startSession } from "@/lib/server/session";
 import { rp, takeChallenge } from "@/lib/server/webauthn";
+import { readJson } from "@/lib/server/body";
 
 export async function POST(req: Request) {
   const pending = await takeChallenge("register");
   if (!pending?.uid) return fail(400, "The passkey request expired. Try again.");
-  const response = (await req.json().catch(() => null)) as RegistrationResponseJSON | null;
+  const response = (await readJson(req)) as RegistrationResponseJSON | null;
   if (!response) return fail(400, "Missing passkey response.");
   const { origin, rpID } = rp();
   let v;
