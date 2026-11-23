@@ -107,7 +107,10 @@ export function onboardingRepo(db: Db): OnboardingRepo {
       return r ? { tmUserId: r.tmUserId, externalRefId: r.externalRefId, solanaAddress: r.solanaAddress, evmAddress: r.evmAddress } : null;
     },
     async saveTmUser(userId, env, rec) {
-      await db.insert(tmUsers).values({ userId, env, ...rec }).onConflictDoNothing();
+      await db
+        .insert(tmUsers)
+        .values({ userId, env, ...rec })
+        .onConflictDoUpdate({ target: tmUsers.userId, set: { solanaAddress: rec.solanaAddress, evmAddress: rec.evmAddress } });
     },
   };
 }

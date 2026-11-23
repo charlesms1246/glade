@@ -34,7 +34,7 @@ export async function onboardUser(
   userId: string,
 ): Promise<TmUserRecord> {
   const existing = await deps.repo.getTmUser(userId);
-  if (existing) return existing;
+  if (existing?.solanaAddress && existing.evmAddress) return existing;
 
   let signer = await deps.repo.getSigner(userId);
   if (!signer) {
@@ -44,12 +44,12 @@ export async function onboardUser(
   }
 
   const user = await deps.tm.createUser({ external_ref_id: externalRefId(userId), signer_public_key: signer.publicKeyHex });
-  const find = (pred: (chain: string) => boolean) => user.wallets.find((w) => pred(String(w.chain ?? "").toLowerCase()))?.address ?? null;
+  const find = (family: "solana" | "evm") => user.wallets.find((w) => w.chain_family === family)?.address ?? null;
   const rec: TmUserRecord = {
     tmUserId: user.user_id,
     externalRefId: externalRefId(userId),
-    solanaAddress: find((c) => c === "solana"),
-    evmAddress: find((c) => c === "evm" || c === "base" || c === "ethereum"),
+    solanaAddress: find("solana"),
+    evmAddress: find("evm"),
   };
   await deps.repo.saveTmUser(userId, deps.env, rec);
   return rec;

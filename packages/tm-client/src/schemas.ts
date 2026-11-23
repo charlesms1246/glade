@@ -120,7 +120,7 @@ export const listAssetsResponse = z
 export const createUserResponse = z
   .object({
     user_id: z.string(),
-    wallets: z.array(z.object({ chain: z.string().optional(), address: z.string() }).passthrough()),
+    wallets: z.array(z.object({ chain_family: z.string(), address: z.string() }).passthrough()),
   })
   .passthrough();
 export type CreateUserResponse = z.infer<typeof createUserResponse>;

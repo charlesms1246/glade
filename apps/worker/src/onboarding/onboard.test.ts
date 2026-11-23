@@ -23,7 +23,7 @@ function harness(handler: (body: { external_ref_id: string; signer_public_key: s
   return { tm, bodies, repo: memoryOnboardingRepo(), masterKey: randomBytes(32) };
 }
 
-const wallets = [{ chain: "solana", address: "So1anaAddr" }, { chain: "evm", address: "0xabc" }];
+const wallets = [{ chain_family: "solana", address: "So1anaAddr" }, { chain_family: "evm", address: "0xabc" }];
 
 describe("onboardUser", () => {
   it("creates a sealed signer key and a Gateway user with wallets", async () => {
@@ -55,6 +55,14 @@ describe("onboardUser", () => {
     const h = harness((_b, n) => (n < 3 ? json(503, { type: "unavailable", message: "wallets", request_id: "r" }) : json(200, { user_id: "tm-1", wallets })));
     await onboardUser({ tm: h.tm, repo: h.repo, masterKey: h.masterKey, env: "prod" }, "u1");
     expect(new Set(h.bodies.map((b) => JSON.stringify(b))).size).toBe(1);
+  });
+
+  it("re-fetches a stored user that has no wallet addresses", async () => {
+    const h = harness(() => json(200, { user_id: "tm-1", wallets }));
+    const deps = { tm: h.tm, repo: h.repo, masterKey: h.masterKey, env: "prod" as const };
+    await h.repo.saveTmUser("u1", "prod", { tmUserId: "tm-1", externalRefId: "glade_u1", solanaAddress: null, evmAddress: null });
+    const rec = await onboardUser(deps, "u1");
+    expect(rec.solanaAddress).toBe("So1anaAddr");
   });
 
   it("will not decrypt with the wrong master key", async () => {

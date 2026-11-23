@@ -112,7 +112,7 @@ describe("TM-On-Behalf-Of", () => {
   it("is sent on user routes and not on org routes", async () => {
     const t = setup({
       "GET /v1/gateway/portfolio": () => json(200, { total_usd: "10", cash_usd: "10", balances: [], positions: [] }),
-      "POST /v1/account/organizations/org_123/users": () => json(200, { user_id: "u9", wallets: [{ chain: "solana", address: "So1" }] }),
+      "POST /v1/account/organizations/org_123/users": () => json(200, { user_id: "u9", wallets: [{ chain_family: "solana", address: "So1" }] }),
     });
     await t.client.forUser("u1").portfolio();
     await t.client.createUser({ external_ref_id: "glade_x", signer_public_key: "02ab" });
@@ -129,7 +129,7 @@ describe("createUser", () => {
     let n = 0;
     const t = setup({
       "POST /v1/account/organizations/org_123/users": () =>
-        ++n < 3 ? json(503, { type: "unavailable", message: "wallets", request_id: "r5" }) : json(200, { user_id: "u9", wallets: [{ address: "So1" }] }),
+        ++n < 3 ? json(503, { type: "unavailable", message: "wallets", request_id: "r5" }) : json(200, { user_id: "u9", wallets: [{ chain_family: "solana", address: "So1" }] }),
     });
     const u = await t.client.createUser({ external_ref_id: "glade_x", signer_public_key: "02ab" });
     expect(u.user_id).toBe("u9");
