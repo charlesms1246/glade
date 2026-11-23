@@ -169,3 +169,9 @@ export async function paperLedgerFor(db: Db, userId: string, limit = 50) {
     .orderBy(sql`${paperLedger.at} desc, ${paperLedger.id} desc`)
     .limit(limit);
 }
+
+/** Users holding at least one paper perp position (the funding job's work list). */
+export async function paperUsersWithPositions(db: Db): Promise<string[]> {
+  const rows = await db.selectDistinct({ id: paperPositions.userId }).from(paperPositions);
+  return rows.map((r) => r.id);
+}
