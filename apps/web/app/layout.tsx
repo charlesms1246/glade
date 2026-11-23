@@ -1,6 +1,9 @@
 import type { Metadata } from "next";
 import { Fraunces, Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { Suspense } from "react";
+import { PaperBadge } from "@/components/paper-badge";
+import { UserNav } from "@/components/user-nav";
 import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
@@ -24,15 +27,21 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-full flex flex-col font-sans">
         <header className="border-b border-sand-deep/70">
           <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
-            <Link href="/" className="font-display text-2xl tracking-tight text-forest">
-              Glade
-            </Link>
-            <nav className="flex gap-6 text-sm text-ink-soft">
+            <div className="flex items-center gap-4">
+              <Link href="/" className="font-display text-2xl tracking-tight text-forest">
+                Glade
+              </Link>
+              <PaperBadge />
+            </div>
+            <nav className="flex flex-wrap items-center justify-end gap-x-6 gap-y-2 text-sm text-ink-soft">
               {nav.map((n) => (
                 <Link key={n.href} href={n.href} className="hover:text-forest">
                   {n.label}
                 </Link>
               ))}
+              <Suspense fallback={null}>
+                <UserNav />
+              </Suspense>
             </nav>
           </div>
         </header>
@@ -40,7 +49,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <footer className="border-t border-sand-deep/70">
           <div className="mx-auto max-w-5xl px-6 py-6 text-xs leading-relaxed text-ink-soft">
             Glade shows estimates and targets, not guarantees. Hedges use perpetual futures, which carry funding costs and
-            liquidation risk. Nothing here is investment advice. Market data: True Markets.
+            liquidation risk. Paper trading: balances and fills are simulated, no real money moves. Nothing here is investment
+            advice. Market data: True Markets.
           </div>
         </footer>
       </body>
