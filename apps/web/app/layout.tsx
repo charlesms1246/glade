@@ -26,14 +26,14 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}>
       <body className="min-h-full flex flex-col font-sans">
         <header className="border-b border-sand-deep/70">
-          <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-5">
+          <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-x-6 gap-y-3 px-6 py-5">
             <div className="flex items-center gap-4">
               <Link href="/" className="font-display text-2xl tracking-tight text-forest">
                 Glade
               </Link>
               <PaperBadge />
             </div>
-            <nav className="flex flex-wrap items-center justify-end gap-x-6 gap-y-2 text-sm text-ink-soft">
+            <nav className="-mx-6 flex w-[calc(100%+3rem)] items-center gap-x-5 overflow-x-auto whitespace-nowrap px-6 text-sm text-ink-soft sm:mx-0 sm:w-auto sm:justify-end sm:gap-x-6 sm:px-0">
               {nav.map((n) => (
                 <Link key={n.href} href={n.href} className="hover:text-forest">
                   {n.label}

@@ -53,6 +53,7 @@ export function ShieldFlow() {
     });
 
   const hasStocks = pf && pf.holdings.length > 0;
+  if (!pf) return <div className="h-64 animate-pulse rounded-2xl bg-sand" aria-busy="true" />;
 
   return (
     <div className="space-y-6">
@@ -97,7 +98,8 @@ export function ShieldFlow() {
 
       {pf && !hasStocks ? (
         <div className="rounded-2xl bg-sand p-7">
-          <p>You hold no stocks yet, so there is nothing to shield.</p>
+          <p className="font-medium">Nothing to shield yet</p>
+          <p className="mt-1 text-sm text-ink-soft">Shield hedges stocks you hold. Buy one first; it takes a few seconds on paper.</p>
           <Link href="/buy" className="mt-4 inline-block rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep">
             Buy a stock
           </Link>
@@ -142,7 +144,10 @@ export function ShieldFlow() {
           <button onClick={() => void confirm()} disabled={busy || !offer.plan.ok} className="mt-6 rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep disabled:opacity-50">
             Approve with passkey
           </button>
-          <p className="mt-3 text-xs text-ink-soft">Valid for 5 minutes. Paper orders fill at the live mark.</p>
+          <p className="mt-3 text-xs text-ink-soft">
+            Your passkey approves exactly this plan. It is valid for 5 minutes; paper orders fill at the live mark, so final
+            amounts can differ slightly.
+          </p>
         </section>
       )}
       {notice && (

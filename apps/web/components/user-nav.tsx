@@ -1,8 +1,11 @@
 import Link from "next/link";
+import { connection } from "next/server";
 import { sessionUserId } from "@/lib/server/session";
 import { SignOut } from "./sign-out";
 
 export async function UserNav() {
+  // Session checks compare against the clock, so this renders per request.
+  await connection();
   const uid = await sessionUserId();
   if (!uid) {
     return (

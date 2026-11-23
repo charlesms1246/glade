@@ -8,19 +8,43 @@ import type { PortfolioView } from "@/lib/server/portfolio";
 
 export function HomeView() {
   const { data: pf, error } = usePoll<PortfolioView>("/api/portfolio");
-  if (!pf) return error ? <p className="text-rose">{error}</p> : <div className="h-64 rounded-2xl bg-sand" />;
+  if (!pf) {
+    return error ? (
+      <p role="alert" className="rounded-2xl bg-sand p-6 text-rose">
+        Could not load your portfolio: {error} It retries every few seconds.
+      </p>
+    ) : (
+      <div className="grid gap-4 sm:grid-cols-3" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <div key={i} className="h-28 animate-pulse rounded-2xl bg-sand" />
+        ))}
+      </div>
+    );
+  }
+  const notFunded = pf.holdings.length === 0 && Number(pf.equityUsd) === 0;
+  const hasStocks = pf.holdings.length > 0;
 
   return (
     <div className="space-y-8">
+      {notFunded && (
+        <p className="rounded-2xl border border-moss/40 bg-sand p-5 text-sm">
+          Your paper account is still being set up.{" "}
+          <Link href="/onboarding" className="text-forest underline">
+            Check its status
+          </Link>
+          .
+        </p>
+      )}
       <section className="grid gap-4 sm:grid-cols-3">
         {[
-          { label: "Equity", value: pf.equityUsd },
-          { label: "Stocks", value: pf.stockValueUsd },
-          { label: "Paper cash", value: pf.cashUsd },
+          { label: "Equity", value: pf.equityUsd, note: "Cash, stocks, and hedge margin with its P&L" },
+          { label: "Stocks", value: pf.stockValueUsd, note: "At the latest price" },
+          { label: "Paper cash", value: pf.cashUsd, note: "Simulated USDC, free to use" },
         ].map((s) => (
           <div key={s.label} className="rounded-2xl bg-sand p-6">
             <p className="text-xs uppercase tracking-wider text-ink-soft">{s.label}</p>
             <p className="num mt-2 font-display text-3xl text-forest-deep">{usd(s.value)}</p>
+            <p className="mt-1 text-xs text-ink-soft">{s.note}</p>
           </div>
         ))}
       </section>
@@ -30,17 +54,30 @@ export function HomeView() {
           <h2 className="font-display text-2xl text-forest-deep">Exposure</h2>
           <span className="text-xs text-ink-soft">% of stock value hedged</span>
         </div>
-        <div className="mt-5">
-          <ExposureGauge exposure={pf.exposure} />
-        </div>
-        <div className="mt-6 flex flex-wrap gap-3">
-          <Link href="/shield" className="rounded-full bg-forest px-5 py-2.5 text-sm font-medium text-paper hover:bg-forest-deep">
-            Shield
-          </Link>
-          <Link href="/bell" className="rounded-full border border-forest/30 px-5 py-2.5 text-sm font-medium text-forest hover:bg-sand">
-            Bell
-          </Link>
-        </div>
+        {hasStocks ? (
+          <>
+            <div className="mt-5">
+              <ExposureGauge exposure={pf.exposure} />
+            </div>
+            <p className="mt-4 text-sm text-ink-soft">
+              Shielded: hedged by a Shield or Bell you approved. Floored: hedged by your Floor mandate. Exposed: moves fully with
+              the stock.
+            </p>
+            <div className="mt-6 flex flex-wrap gap-3">
+              <Link href="/shield" className="rounded-full bg-forest px-5 py-2.5 text-sm font-medium text-paper hover:bg-forest-deep">
+                Shield
+              </Link>
+              <Link href="/floor" className="rounded-full border border-forest/30 px-5 py-2.5 text-sm font-medium text-forest hover:bg-sand">
+                Floor
+              </Link>
+              <Link href="/bell" className="rounded-full border border-forest/30 px-5 py-2.5 text-sm font-medium text-forest hover:bg-sand">
+                Bell
+              </Link>
+            </div>
+          </>
+        ) : (
+          <p className="mt-4 text-ink-soft">Nothing to protect yet. Once you hold a stock, this shows how much of it is hedged.</p>
+        )}
       </section>
 
       <section>
@@ -51,7 +88,12 @@ export function HomeView() {
           </Link>
         </div>
         {pf.holdings.length === 0 ? (
-          <p className="mt-4 rounded-2xl bg-sand p-6 text-ink-soft">No stocks yet. Buy one to start protecting it.</p>
+          <div className="mt-4 rounded-2xl bg-sand p-6">
+            <p className="text-ink-soft">No stocks yet. Tokenized US stocks trade around the clock here, at live prices.</p>
+            <Link href="/buy" className="mt-4 inline-block rounded-full bg-forest px-5 py-2.5 text-sm font-medium text-paper hover:bg-forest-deep">
+              Buy your first stock
+            </Link>
+          </div>
         ) : (
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             {pf.holdings.map((h) => (
