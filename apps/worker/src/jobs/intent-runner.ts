@@ -1,3 +1,4 @@
+import { dec } from "@glade/shared";
 import type { ExecResult } from "../executor/types";
 import type { IntentRow } from "../policy/authorize";
 
@@ -34,10 +35,11 @@ export async function runPendingIntents(deps: IntentRunnerDeps, limit = 10): Pro
 
 /** One plain-English line for the activity log. */
 export function explainResult(i: ClaimedIntent, r: ExecResult): string {
-  const what = `${i.kind.replace("_", " ")} ${i.side} ${i.qty}${i.qtyUnit === "quote" ? " USD" : ""}${i.reduceOnly ? " (reduce-only)" : ""}`;
+  const num = (v: string, dp: number) => dec(v).toDecimalPlaces(dp).toString();
+  const what = `${i.kind.replace("_", " ")} ${i.side} ${num(i.qty, 6)}${i.qtyUnit === "quote" ? " USD" : ""}${i.reduceOnly ? " (reduce-only)" : ""}`;
   switch (r.outcome) {
     case "complete":
-      return `Filled: ${what}${r.row.avgPrice ? ` at ${r.row.avgPrice}` : ""}${r.row.fee ? `, fee ${r.row.fee}` : ""}. ${i.reason}`;
+      return `Filled: ${what}${r.row.avgPrice ? ` at ${num(r.row.avgPrice, 4)}` : ""}${r.row.fee ? `, fee ${num(r.row.fee, 4)}` : ""}. ${i.reason}`;
     case "rejected":
       return `Not placed: ${what}. Blocked by policy: ${r.reasons.join("; ")}.`;
     case "failed":

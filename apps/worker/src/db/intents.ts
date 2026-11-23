@@ -107,7 +107,7 @@ export async function dueBellHedges(db: Db, now: Date) {
     join lateral (
       select inputs, plan_hash from intents where hedge_id = h.id and kind = 'open' and status = 'done' limit 1
     ) i on true
-    where h.mode = 'bell' and h.status = 'active' and h.unwind_at <= ${now}
+    where h.mode = 'bell' and h.status = 'active' and h.unwind_at <= ${now.toISOString()}::timestamptz
       and not exists (select 1 from intents c where c.hedge_id = h.id and c.kind = 'close')`);
   return (rows as unknown as { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string }[]).map((r) => ({
     hedgeId: r.hedge_id,
@@ -134,9 +134,9 @@ export async function reclaimStale(db: Db, olderThanMs: number, limit: number): 
   const cutoff = new Date(Date.now() - olderThanMs);
   const rows = await db.execute<{ id: string }>(sql`
     select i.id from intents i
-    where i.status = 'executing' and i.created_at < ${cutoff}
+    where i.status = 'executing' and i.created_at < ${cutoff.toISOString()}::timestamptz
       and not exists (
-        select 1 from orders o where o.intent_id = i.id and o.created_at >= ${cutoff}
+        select 1 from orders o where o.intent_id = i.id and o.created_at >= ${cutoff.toISOString()}::timestamptz
       )
     order by i.created_at limit ${limit}`);
   const ids = (rows as unknown as { id: string }[]).map((r) => r.id);

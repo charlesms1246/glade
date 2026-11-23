@@ -51,3 +51,11 @@ describe("intent runner", () => {
     ).toBe("Filled: open sell 0.06 at 164.2, fee 0.004. Shield 75% of NVDA.");
   });
 });
+
+describe("explainResult formatting", () => {
+  it("trims database-scale decimals", () => {
+    const i = { ...intent("a"), qty: "3.629000000000000000" };
+    const row = { intentId: "a", attempt: 1, tmOrderId: "o", status: "complete" as const, avgPrice: "165.165000", fee: "0.26972270325" };
+    expect(explainResult(i, { outcome: "complete", tmOrderId: "o", row })).toBe("Filled: open sell 3.629 at 165.165, fee 0.2697. Shield 75% of NVDA.");
+  });
+});
