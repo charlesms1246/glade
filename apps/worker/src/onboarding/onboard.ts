@@ -36,12 +36,7 @@ export async function onboardUser(
   const existing = await deps.repo.getTmUser(userId);
   if (existing?.solanaAddress && existing.evmAddress) return existing;
 
-  let signer = await deps.repo.getSigner(userId);
-  if (!signer) {
-    const kp = generateSignerKeyPair();
-    signer = { publicKeyHex: kp.publicKeyHex, sealed: sealPrivateKey(kp.privateKeyHex, deps.masterKey) };
-    await deps.repo.saveSigner(userId, deps.env, signer);
-  }
+  const signer = await ensureSigner(deps, userId);
 
   const user = await deps.tm.createUser({ external_ref_id: externalRefId(userId), signer_public_key: signer.publicKeyHex });
   const find = (family: "solana" | "evm") => user.wallets.find((w) => w.chain_family === family)?.address ?? null;
@@ -53,6 +48,19 @@ export async function onboardUser(
   };
   await deps.repo.saveTmUser(userId, deps.env, rec);
   return rec;
+}
+
+/** The user's signer key, created and sealed on first use. A user keeps one key for life. */
+export async function ensureSigner(
+  deps: { repo: OnboardingRepo; masterKey: Buffer; env: TmEnv },
+  userId: string,
+): Promise<StoredSigner> {
+  const existing = await deps.repo.getSigner(userId);
+  if (existing) return existing;
+  const kp = generateSignerKeyPair();
+  const signer = { publicKeyHex: kp.publicKeyHex, sealed: sealPrivateKey(kp.privateKeyHex, deps.masterKey) };
+  await deps.repo.saveSigner(userId, deps.env, signer);
+  return signer;
 }
 
 /** Decrypt a user's signer key for stamping. */

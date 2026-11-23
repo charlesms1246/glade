@@ -1,29 +1,52 @@
 import type { TmUserRecord } from "../onboarding/onboard";
 
 export interface OnboardingJobDeps {
-  /** App users that have no Gateway user yet, oldest first. */
-  pending: (limit: number) => Promise<{ id: string }[]>;
-  onboard: (userId: string) => Promise<TmUserRecord>;
-  /** Credit the user's paper account (no real money). Called once per newly onboarded user. */
-  fundPaper: (userId: string) => Promise<void>;
-  record: (userId: string, rec: TmUserRecord) => Promise<void>;
+  /** Users missing a paper account, or (when `gatewayAllowed`) a Gateway user. Oldest first. */
+  pending: (limit: number, includeGateway: boolean) => Promise<{ id: string }[]>;
+  ensureSigner: (userId: string) => Promise<void>;
+  /** Create the paper account if absent (no real money). Returns true when it was created now. */
+  ensurePaper: (userId: string) => Promise<boolean>;
+  /** Link a True Markets Gateway user. Best-effort: the org has a user limit. */
+  createGateway: (userId: string) => Promise<TmUserRecord>;
+  gatewayAllowed: () => boolean;
+  /** Called when True Markets refuses new users; the caller backs off. */
+  onGatewayRefused: (e: unknown) => void;
+  isGatewayRefusal: (e: unknown) => boolean;
+  /** New paper accounts left today; protects against sign-up floods. */
+  paperBudget: () => number;
+  record: (userId: string, event: "paper_ready" | "gateway_linked", rec?: TmUserRecord) => Promise<void>;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
-/** Onboards a few users per tick. One user's failure never blocks the others; it is retried next tick. */
-export async function runOnboardingJob(deps: OnboardingJobDeps, limit = 5): Promise<{ done: string[]; failed: string[] }> {
-  const done: string[] = [];
+/**
+ * Paper-first onboarding: a signer key and a paper account make a user ready to trade on paper.
+ * The True Markets Gateway user is linked when the organisation allows it; refusals never block paper.
+ */
+export async function runOnboardingJob(deps: OnboardingJobDeps, limit = 5): Promise<{ ready: string[]; linked: string[]; failed: string[] }> {
+  const ready: string[] = [];
+  const linked: string[] = [];
   const failed: string[] = [];
-  for (const { id } of await deps.pending(limit)) {
+  for (const { id } of await deps.pending(limit, deps.gatewayAllowed())) {
     try {
-      const rec = await deps.onboard(id);
-      await deps.fundPaper(id);
-      await deps.record(id, rec);
-      done.push(id);
+      await deps.ensureSigner(id);
+      if (deps.paperBudget() > 0 && (await deps.ensurePaper(id))) {
+        await deps.record(id, "paper_ready");
+        ready.push(id);
+      }
     } catch (e) {
       failed.push(id);
       deps.log?.("onboarding_failed", { userId: id, error: String(e).slice(0, 300) });
+      continue;
+    }
+    if (!deps.gatewayAllowed()) continue;
+    try {
+      const rec = await deps.createGateway(id);
+      await deps.record(id, "gateway_linked", rec);
+      linked.push(id);
+    } catch (e) {
+      if (deps.isGatewayRefusal(e)) deps.onGatewayRefused(e);
+      else deps.log?.("gateway_link_failed", { userId: id, error: String(e).slice(0, 300) });
     }
   }
-  return { done, failed };
+  return { ready, linked, failed };
 }

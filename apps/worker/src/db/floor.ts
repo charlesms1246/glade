@@ -81,17 +81,21 @@ export async function insertFloorIntents(db: Db, userId: string, drafts: FloorDr
   });
 }
 
-/** Users still needing a Gateway user or a paper account. */
-export async function pendingOnboarding(db: Db, limit: number): Promise<{ id: string }[]> {
-  const noTm = await db
-    .select({ id: appUsers.id })
-    .from(appUsers)
-    .leftJoin(tmUsers, eq(tmUsers.userId, appUsers.id))
-    .where(isNull(tmUsers.userId))
-    .orderBy(appUsers.createdAt)
-    .limit(limit);
+/** Users missing a paper account, plus (when allowed) users without a Gateway user. */
+export async function pendingOnboarding(db: Db, limit: number, includeGateway: boolean): Promise<{ id: string }[]> {
   const noPaper = await usersWithoutPaperAccount(db, limit);
-  return [...new Set([...noTm.map((r) => r.id), ...noPaper])].slice(0, limit).map((id) => ({ id }));
+  const noTm = includeGateway
+    ? (
+        await db
+          .select({ id: appUsers.id })
+          .from(appUsers)
+          .leftJoin(tmUsers, eq(tmUsers.userId, appUsers.id))
+          .where(isNull(tmUsers.userId))
+          .orderBy(appUsers.createdAt)
+          .limit(limit)
+      ).map((r) => r.id)
+    : [];
+  return [...new Set([...noPaper, ...noTm])].slice(0, limit).map((id) => ({ id }));
 }
 
 /**

@@ -5,7 +5,7 @@ import { ENGINE_VERSION, normalizeSymbol, referenceSpotSymbol } from "@glade/eng
 import { createPaperVenue, drizzlePaperRepo, drizzleRegistry, paperUsersWithPositions } from "@glade/paper";
 import { dec, Decimal, type Env } from "@glade/shared";
 import { parseMasterKey } from "@glade/stamp";
-import type { TmClient, TokenManager } from "@glade/tm-client";
+import { TmApiError, type TmClient, type TokenManager } from "@glade/tm-client";
 import { and, eq } from "drizzle-orm";
 import type { Logger } from "pino";
 import { activeFloorUsers, floorHedgeSizes, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState } from "./db/floor";
@@ -21,7 +21,7 @@ import { runFloorJob } from "./floor/job";
 import { ratesFromAssets, runFundingJob } from "./funding/job";
 import type { PriceCache } from "./market/price-cache";
 import type { MarketStream } from "./market/stream";
-import { loadSigner, onboardUser } from "./onboarding/onboard";
+import { ensureSigner, loadSigner, onboardUser } from "./onboarding/onboard";
 import { authorizeIntent } from "./policy/authorize";
 
 /** Paper USDC credited to each new account. No real money is ever involved. */
@@ -29,6 +29,8 @@ export const PAPER_START_USD = "10000";
 const PRICE_MAX_AGE_MS = 60_000;
 const PERP_SIZE_STEP = "0.001";
 const STALE_INTENT_MS = 3 * 60_000;
+const GATEWAY_BACKOFF_MS = 60 * 60_000;
+const MAX_PAPER_ACCOUNTS_PER_DAY = 200;
 
 export interface TradingDeps {
   db: Db;
@@ -300,23 +302,50 @@ export function startTrading(d: TradingDeps): () => void {
     }),
   );
 
-  if (d.tokens) {
-    timers.push(
-      every("onboarding", 5_000, async () => {
-        const r = await runOnboardingJob({
-          pending: (n) => pendingOnboarding(db, n),
-          onboard: (userId) => onboardUser({ tm, repo: onboarding, masterKey, env: env.TM_ENV }, userId),
-          fundPaper: async (userId) => void (await venue.ensurePaperAccount(userId, PAPER_START_USD)),
-          record: (userId, rec) =>
-            logDecision(db, { userId, engineVersion: ENGINE_VERSION, action: "onboarded", explanation: `Account ready with ${PAPER_START_USD} paper USDC (no real money).`, inputs: {}, outputs: { tmUserId: rec.tmUserId } }),
-          log: (event, fields) => log.warn(fields, event),
-        });
-        if (r.done.length) log.info({ users: r.done.length }, "onboarded");
-      }),
-    );
-  } else {
-    log.warn("onboarding disabled: no organization token");
-  }
+  // Paper-first onboarding. Gateway users are linked when the org allows; refusals back off for an hour.
+  let gatewayBackoffUntil = 0;
+  let budgetDay = "";
+  let paperToday = 0;
+  timers.push(
+    every("onboarding", 5_000, async () => {
+      const today = new Date().toISOString().slice(0, 10);
+      if (today !== budgetDay) {
+        budgetDay = today;
+        paperToday = 0;
+      }
+      const r = await runOnboardingJob({
+        pending: (n, gw) => pendingOnboarding(db, n, gw),
+        ensureSigner: async (userId) => void (await ensureSigner({ repo: onboarding, masterKey, env: env.TM_ENV }, userId)),
+        ensurePaper: async (userId) => {
+          const created = await venue.ensurePaperAccount(userId, PAPER_START_USD);
+          if (created) paperToday++;
+          return created;
+        },
+        createGateway: (userId) => onboardUser({ tm, repo: onboarding, masterKey, env: env.TM_ENV }, userId),
+        gatewayAllowed: () => Boolean(d.tokens) && Date.now() >= gatewayBackoffUntil,
+        isGatewayRefusal: (e) => e instanceof TmApiError && e.status === 422 && /user limit/i.test(e.message),
+        onGatewayRefused: (e) => {
+          gatewayBackoffUntil = Date.now() + GATEWAY_BACKOFF_MS;
+          log.warn({ requestId: e instanceof TmApiError ? e.requestId : undefined, retryAt: new Date(gatewayBackoffUntil).toISOString() }, "gateway_user_limit_reached");
+        },
+        paperBudget: () => MAX_PAPER_ACCOUNTS_PER_DAY - paperToday,
+        record: (userId, event, rec) =>
+          logDecision(db, {
+            userId,
+            engineVersion: ENGINE_VERSION,
+            action: event === "paper_ready" ? "onboarded" : "gateway_linked",
+            explanation:
+              event === "paper_ready"
+                ? `Account ready with ${PAPER_START_USD} paper USDC (no real money).`
+                : "Linked to a True Markets Gateway user with its own signer key.",
+            inputs: {},
+            outputs: rec ? { tmUserId: rec.tmUserId } : {},
+          }),
+        log: (event, fields) => log.warn(fields, event),
+      });
+      if (r.ready.length || r.linked.length) log.info({ ready: r.ready.length, linked: r.linked.length }, "onboarding");
+    }),
+  );
 
   return () => timers.forEach(clearInterval);
 }
