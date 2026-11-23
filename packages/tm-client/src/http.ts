@@ -1,3 +1,4 @@
+import { assertNoRealMoney } from "./money-guard";
 import type { TokenManager } from "./token";
 
 export interface HttpOptions {
@@ -32,6 +33,8 @@ export function createTmFetch(opts: HttpOptions): (input: Request) => Promise<Re
   const max429 = opts.max429Retries ?? 3;
 
   return async (input: Request) => {
+    // Hard stop before any network I/O: production is read-only for Glade.
+    assertNoRealMoney(input.method, input.url);
     const original = input.clone();
     let reminted = false;
     let rateRetries = 0;

@@ -2,6 +2,7 @@ import { buildTokenRequest } from "@glade/stamp";
 import type { JsonWebKey } from "node:crypto";
 import { z } from "zod";
 import { TmApiError } from "./errors";
+import { assertNoRealMoney } from "./money-guard";
 
 const REMINT_AFTER_MS = 55 * 60 * 1000;
 
@@ -53,6 +54,7 @@ export function apiKeyMinter(opts: {
   return async () => {
     const mintedAt = now();
     const body = buildTokenRequest(opts.key.key_id, opts.key.private_key, mintedAt);
+    assertNoRealMoney("POST", `${opts.restBase}/v1/auth/api-key/token`);
     const res = await doFetch(`${opts.restBase}/v1/auth/api-key/token`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
