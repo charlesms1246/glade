@@ -34,7 +34,7 @@ function harness(routes: Record<string, Route>, config: Partial<ExecutorConfig> 
     repo: mem.repo,
     authorize: async (i) => (authorizeCalls.push(i.id), allow ? { ok: true } : { ok: false, reasons: ["no active mandate"] }),
     signerFor: async () => signer,
-    config: { tmEnv: "uat", maxOrderUsd: "20", pollIntervalMs: 2000, pollTimeoutMs: 10_000, ...config },
+    config: { venue: "uat", tmEnv: "uat", maxOrderUsd: "20", pollIntervalMs: 2000, pollTimeoutMs: 10_000, ...config },
     now: () => t,
     sleep: async (ms) => void (t += ms),
   });
@@ -44,7 +44,7 @@ function harness(routes: Record<string, Route>, config: Partial<ExecutorConfig> 
 const intent: ExecIntent = {
   id: "i1",
   userId: "app-u1",
-  tmUserId: "tm-u1",
+  venueUserId: "tm-u1",
   assetId: "perp-sp500",
   side: "sell",
   qty: "0.002",
@@ -175,6 +175,17 @@ describe("Executor", () => {
         expect(h.calls).toHaveLength(0);
         expect(h.authorizeCalls).toHaveLength(0);
       }
+    });
+    it("rejects a real True Markets client under prod even when config says paper", async () => {
+      const h = harness({ "POST /orders": created() }, { tmEnv: "prod", venue: "paper" });
+      expect(await h.exec.execute(intent)).toMatchObject({ outcome: "rejected" });
+      expect(h.calls).toHaveLength(0);
+      expect(h.authorizeCalls).toHaveLength(0);
+    });
+    it("rejects a real True Markets client on UAT when config says paper", async () => {
+      const h = harness({ "POST /orders": created() }, { venue: "paper" });
+      expect(await h.exec.execute(intent)).toEqual({ outcome: "rejected", reasons: ["config says paper but the venue is not the paper venue"] });
+      expect(h.calls).toHaveLength(0);
     });
     it("enforces MAX_ORDER_USD on UAT too", async () => {
       const h = harness({ "POST /orders": created() }, { maxOrderUsd: "10" });

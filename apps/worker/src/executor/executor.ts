@@ -1,7 +1,7 @@
 import { stampPayload } from "@glade/stamp";
-import { TmApiError, type OrderDetail, type TmClient } from "@glade/tm-client";
+import { TmApiError, type OrderDetail } from "@glade/tm-client";
 import { prodGuard } from "./guard";
-import type { ExecIntent, ExecResult, ExecutorDeps, OrderRow } from "./types";
+import type { ExecIntent, ExecResult, ExecutorDeps, ExecVenue, OrderRow } from "./types";
 
 const FINAL = new Set(["complete", "canceled", "failed", "failed_funding"]);
 const MAX_ATTEMPTS = 2; // first try + one recreate after quote_stale
@@ -10,7 +10,7 @@ const MAX_ATTEMPTS = 2; // first try + one recreate after quote_stale
  * create → stamp → execute → poll, for one intent. Safe to re-run: an attempt that already
  * reached True Markets is only ever polled, never re-created or re-executed.
  */
-export function createExecutor(tm: TmClient, deps: ExecutorDeps) {
+export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const log = deps.log ?? (() => {});
@@ -18,14 +18,14 @@ export function createExecutor(tm: TmClient, deps: ExecutorDeps) {
   const pollTimeout = deps.config.pollTimeoutMs ?? 120_000;
 
   async function gate(intent: ExecIntent): Promise<string[]> {
-    const hard = prodGuard(intent, deps.config);
+    const hard = prodGuard(intent, deps.config, venue);
     if (hard.length) return hard;
     const policy = await deps.authorize(intent);
     return policy.ok ? [] : policy.reasons;
   }
 
   async function poll(intent: ExecIntent, row: OrderRow): Promise<ExecResult> {
-    const user = tm.forUser(intent.tmUserId);
+    const user = venue.forUser(intent.venueUserId);
     const tmOrderId = row.tmOrderId!;
     const deadline = now() + pollTimeout;
     for (;;) {
@@ -91,7 +91,7 @@ export function createExecutor(tm: TmClient, deps: ExecutorDeps) {
       const row: OrderRow = { intentId: intent.id, attempt, tmOrderId: null, status: "created" };
       await deps.repo.insertOrder(row);
       await deps.repo.setIntentStatus(intent.id, "executing");
-      const user = tm.forUser(intent.tmUserId);
+      const user = venue.forUser(intent.venueUserId);
 
       const created = await user.createOrder({
         asset_id: intent.assetId,
@@ -116,7 +116,7 @@ export function createExecutor(tm: TmClient, deps: ExecutorDeps) {
 
       const payloads = created.payloads ?? [];
       if (payloads.length === 0) {
-        // Already submitted by True Markets (CeFi or paper): poll only.
+        // Already submitted by the venue (CeFi): poll only.
         await deps.repo.updateOrder(intent.id, attempt, { status: "submitted" });
         return poll(intent, { ...row, status: "submitted" });
       }
