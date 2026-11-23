@@ -2,6 +2,7 @@ import type { ActiveMandate } from "@glade/engine";
 import { schema, type Db } from "@glade/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { ExecResult } from "../executor/types";
+import type { CloseIntentDraft } from "../jobs/bell-unwind";
 import { explainResult, type ClaimedIntent } from "../jobs/intent-runner";
 import type { StoredPasskey } from "../policy/authorize";
 import { logDecision, publish } from "./repos";
@@ -96,4 +97,30 @@ export function policyQueries(db: Db) {
       return r?.n ?? 0;
     },
   };
+}
+
+/** Bell hedges due for unwind that have no close intents yet. Inserting the drafts is idempotent per hedge. */
+export async function dueBellHedges(db: Db, now: Date) {
+  const rows = await db.execute<{ hedge_id: string; user_id: string; inputs: unknown; plan_hash: string }>(sql`
+    select h.id as hedge_id, h.user_id, i.inputs, i.plan_hash
+    from hedges h
+    join lateral (
+      select inputs, plan_hash from intents where hedge_id = h.id and kind = 'open' and status = 'done' limit 1
+    ) i on true
+    where h.mode = 'bell' and h.status = 'active' and h.unwind_at <= ${now}
+      and not exists (select 1 from intents c where c.hedge_id = h.id and c.kind = 'close')`);
+  return (rows as unknown as { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string }[]).map((r) => ({
+    hedgeId: r.hedge_id,
+    userId: r.user_id,
+    openInputs: r.inputs,
+    planHash: r.plan_hash,
+  }));
+}
+
+export async function insertCloseIntents(db: Db, drafts: CloseIntentDraft[]): Promise<void> {
+  if (drafts.length === 0) return;
+  await db.transaction(async (tx) => {
+    await tx.insert(intents).values(drafts);
+    await tx.update(hedges).set({ status: "unwinding" }).where(eq(hedges.id, drafts[0]!.hedgeId));
+  });
 }
