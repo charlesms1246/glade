@@ -10,9 +10,14 @@ const planSchema = z
       z.object({ symbol: z.string(), valueUsd: z.string(), perpSymbol: z.string(), rejected: z.string().nullish() }).passthrough(),
     ),
     legs: z.array(z.object({ assetId: z.string(), symbol: z.string(), reduceOnly: z.boolean() }).passthrough()),
-    // Optional estimate recorded at approval: fraction, by perp symbol or one for all.
+    // Estimates the user saw at approval: [{symbol, gap (fraction), band, ...}], or legacy shapes.
+    estimates: z
+      .union([
+        z.array(z.object({ symbol: z.string(), gap: z.string(), band: z.string().optional() }).passthrough()),
+        z.record(z.string(), z.string()),
+      ])
+      .optional(),
     estGapPct: z.string().optional(),
-    estimates: z.record(z.string(), z.string()).optional(),
   })
   .passthrough();
 
@@ -45,6 +50,8 @@ export interface LegReport {
   holding: string;
   estGap: Decimal;
   estSource: "plan" | "implied_at_open_fill";
+  /** ± band shown with the estimate at approval, when recorded. */
+  band: Decimal | null;
   realisedGap: Decimal;
   estGapUsd: Decimal;
   realGapUsd: Decimal;
@@ -76,6 +83,11 @@ export function computeHedgeReport(i: LegInputs): HedgeReport | string {
   if (!parsed.success) return "plan is not a bell plan";
   const plan = parsed.data;
   const snaps = new Map(i.snapshots.map((s) => [s.symbol, s]));
+  const est = new Map<string, { gap: string; band?: string }>(
+    Array.isArray(plan.estimates)
+      ? plan.estimates.map((e) => [e.symbol, e])
+      : Object.entries(plan.estimates ?? {}).map(([k, gap]) => [k, { gap }]),
+  );
   const legs: LegReport[] = [];
   for (const row of plan.rows) {
     if (row.rejected) continue;
@@ -92,7 +104,8 @@ export function computeHedgeReport(i: LegInputs): HedgeReport | string {
     const qty = sum(opens.map((f) => dec(f.executedQty)));
     // Volume-weighted open fill price: the perp mark the estimate is read from.
     const openVwap = sum(opens.map((f) => dec(f.executedQty).mul(f.avgPrice))).div(qty);
-    const planned = plan.estimates?.[row.perpSymbol] ?? plan.estGapPct;
+    const shown = est.get(row.perpSymbol) ?? est.get(row.symbol);
+    const planned = shown?.gap ?? plan.estGapPct;
     // Without a recorded estimate: the implied gap at the open fill (mark with the close basis removed).
     const estGap = planned !== undefined ? dec(planned) : impliedOpen(openVwap, snap.basis).div(snap.closePx).minus(1);
     const fees = sum(fills.map((f) => dec(f.fee)));
@@ -110,6 +123,7 @@ export function computeHedgeReport(i: LegInputs): HedgeReport | string {
       holding: row.symbol,
       estGap,
       estSource: planned !== undefined ? "plan" : "implied_at_open_fill",
+      band: shown?.band !== undefined ? dec(shown.band) : null,
       realisedGap: r.realisedGap,
       estGapUsd: r.estGapUsd,
       realGapUsd: r.realGapUsd,
@@ -135,9 +149,14 @@ export function computeHedgeReport(i: LegInputs): HedgeReport | string {
 const pct = (d: Decimal) => `${d.gte(0) ? "+" : "−"}${d.abs().mul(100).toFixed(1)}%`;
 const usd = (d: Decimal) => `${d.gte(0) ? "" : "−"}$${d.abs().toFixed(2)}`;
 
-/** Plain-English activity line, e.g. "Bell report: NVDA opened +2.1% vs estimate +1.6% (±2.3%). …". */
-export function explainReport(r: HedgeReport, band: Decimal): string {
-  const moves = r.legs.map((l) => `${l.symbol} opened ${pct(l.realisedGap)} vs estimate ${pct(l.estGap)} (±${band.mul(100).toFixed(1)}%)`).join("; ");
+/**
+ * Plain-English activity line, e.g. "Bell report: NVDA opened +2.1% vs estimate +1.6% (±2.3%). …".
+ * Uses the band shown at approval, else `fallbackBand`.
+ */
+export function explainReport(r: HedgeReport, fallbackBand: Decimal): string {
+  const moves = r.legs
+    .map((l) => `${l.symbol} opened ${pct(l.realisedGap)} vs estimate ${pct(l.estGap)} (±${(l.band ?? fallbackBand).mul(100).toFixed(1)}%)`)
+    .join("; ");
   const pnl = sum(r.legs.map((l) => l.hedgePnl));
   return `Bell report: ${moves}. Hedge P&L ${usd(pnl)}, costs ${usd(r.costUsd)}, net saved ${usd(r.savedUsd)}.`;
 }

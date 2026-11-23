@@ -61,7 +61,17 @@ describe("Bell hedge report", () => {
     expect(r.legs[0]!.estGap.toFixed(6)).toBe("0.000000");
   });
 
-  it("prefers the estimate recorded in the approved plan", () => {
+  it("uses the estimates array the user saw, by symbol, including its band", () => {
+    const estimates = [{ symbol: "NVDA", close: "100", impliedOpen: "101.6", gap: "0.016", band: "0.023" }];
+    const r = ok(computeHedgeReport({ ...base, plan: plan({ estimates }) }));
+    expect(r.legs[0]).toMatchObject({ estSource: "plan" });
+    expect(r.legs[0]!.estGap.toString()).toBe("0.016");
+    expect(r.legs[0]!.band!.toString()).toBe("0.023");
+    expect(r.legs[1]).toMatchObject({ estSource: "implied_at_open_fill", band: null });
+    expect(explainReport(r, dec("0.09"))).toContain("NVDA opened +2.0% vs estimate +1.6% (±2.3%); TSLA opened −1.0% vs estimate +0.0% (±9.0%)");
+  });
+
+  it("accepts the legacy record shape", () => {
     const r = ok(computeHedgeReport({ ...base, plan: plan({ estimates: { NVDA: "0.016" }, estGapPct: "0.005" }) }));
     expect(r.legs[0]).toMatchObject({ estSource: "plan" });
     expect(r.legs[0]!.estGap.toString()).toBe("0.016");
