@@ -1,0 +1,185 @@
+{
+  "summary": {
+    "generatedAt": "2026-11-23T18:36:43.921Z",
+    "source": "https://api.truemarkets.co /v1/defi/market/prices/history (1m, as_of)",
+    "symbol": "NVDA",
+    "method": "implied open = perp mark 1h before open / (1 + basis at close); actual = spot 5 min after open",
+    "closures": 12,
+    "used": 12,
+    "sigmaBp": "499.2",
+    "naiveSigmaBp": "845.8",
+    "seedSigmaBp": "80.0",
+    "byKind": {
+      "overnight": {
+        "n": 9,
+        "rmsErrorBp": "231.9"
+      },
+      "weekend": {
+        "n": 3,
+        "rmsErrorBp": "913.9"
+      },
+      "holiday": {
+        "n": 0,
+        "rmsErrorBp": null
+      }
+    }
+  },
+  "rows": [
+    {
+      "kind": "weekend",
+      "closeAt": "2026-11-20T21:00:00.000Z",
+      "openAt": "2026-11-23T14:30:00.000Z",
+      "close": "125.7528",
+      "basisBp": "19.7",
+      "impliedOpen": "135.7281",
+      "actualOpen": "160.9834",
+      "estGapBp": "793.3",
+      "realGapBp": "2801.6",
+      "errorBp": "-1568.8",
+      "naiveErrorBp": "-2188.5"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-19T21:00:00.000Z",
+      "openAt": "2026-11-20T14:30:00.000Z",
+      "close": "146.5282",
+      "basisBp": "-25.8",
+      "impliedOpen": "141.2295",
+      "actualOpen": "142.1249",
+      "estGapBp": "-361.6",
+      "realGapBp": "-300.5",
+      "errorBp": "-63.0",
+      "naiveErrorBp": "309.8"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-18T21:00:00.000Z",
+      "openAt": "2026-11-19T14:30:00.000Z",
+      "close": "150.8188",
+      "basisBp": "7.7",
+      "impliedOpen": "152.8472",
+      "actualOpen": "156.5029",
+      "estGapBp": "134.5",
+      "realGapBp": "376.9",
+      "errorBp": "-233.6",
+      "naiveErrorBp": "-363.2"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-17T21:00:00.000Z",
+      "openAt": "2026-11-18T14:30:00.000Z",
+      "close": "155.0305",
+      "basisBp": "23.5",
+      "impliedOpen": "159.5699",
+      "actualOpen": "159.3555",
+      "estGapBp": "292.8",
+      "realGapBp": "279.0",
+      "errorBp": "13.5",
+      "naiveErrorBp": "-271.4"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-16T21:00:00.000Z",
+      "openAt": "2026-11-17T14:30:00.000Z",
+      "close": "156.1986",
+      "basisBp": "-4.7",
+      "impliedOpen": "158.2345",
+      "actualOpen": "156.0459",
+      "estGapBp": "130.3",
+      "realGapBp": "-9.8",
+      "errorBp": "140.3",
+      "naiveErrorBp": "9.8"
+    },
+    {
+      "kind": "weekend",
+      "closeAt": "2026-11-13T21:00:00.000Z",
+      "openAt": "2026-11-16T14:30:00.000Z",
+      "close": "162.8282",
+      "basisBp": "-3.3",
+      "impliedOpen": "156.3411",
+      "actualOpen": "158.3858",
+      "estGapBp": "-398.4",
+      "realGapBp": "-272.8",
+      "errorBp": "-129.1",
+      "naiveErrorBp": "280.5"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-12T21:00:00.000Z",
+      "openAt": "2026-11-13T14:30:00.000Z",
+      "close": "166.1174",
+      "basisBp": "1.1",
+      "impliedOpen": "168.9921",
+      "actualOpen": "167.3135",
+      "estGapBp": "173.1",
+      "realGapBp": "72.0",
+      "errorBp": "100.3",
+      "naiveErrorBp": "-71.5"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-11T21:00:00.000Z",
+      "openAt": "2026-11-12T14:30:00.000Z",
+      "close": "174.2581",
+      "basisBp": "-19.7",
+      "impliedOpen": "158.8928",
+      "actualOpen": "151.0382",
+      "estGapBp": "-881.8",
+      "realGapBp": "-1332.5",
+      "errorBp": "520.0",
+      "naiveErrorBp": "1537.4"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-10T21:00:00.000Z",
+      "openAt": "2026-11-11T14:30:00.000Z",
+      "close": "168.9685",
+      "basisBp": "6.3",
+      "impliedOpen": "175.0247",
+      "actualOpen": "174.5489",
+      "estGapBp": "358.4",
+      "realGapBp": "330.3",
+      "errorBp": "27.3",
+      "naiveErrorBp": "-319.7"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-09T21:00:00.000Z",
+      "openAt": "2026-11-10T14:30:00.000Z",
+      "close": "178.9607",
+      "basisBp": "-5.4",
+      "impliedOpen": "177.8101",
+      "actualOpen": "171.8161",
+      "estGapBp": "-64.3",
+      "realGapBp": "-399.2",
+      "errorBp": "348.9",
+      "naiveErrorBp": "415.8"
+    },
+    {
+      "kind": "weekend",
+      "closeAt": "2026-11-06T21:00:00.000Z",
+      "openAt": "2026-11-09T14:30:00.000Z",
+      "close": "187.2219",
+      "basisBp": "-25.2",
+      "impliedOpen": "177.1064",
+      "actualOpen": "174.1862",
+      "estGapBp": "-540.3",
+      "realGapBp": "-696.3",
+      "errorBp": "167.6",
+      "naiveErrorBp": "748.4"
+    },
+    {
+      "kind": "overnight",
+      "closeAt": "2026-11-05T21:00:00.000Z",
+      "openAt": "2026-11-06T14:30:00.000Z",
+      "close": "183.2021",
+      "basisBp": "-63.2",
+      "impliedOpen": "191.0013",
+      "actualOpen": "192.0248",
+      "estGapBp": "425.7",
+      "realGapBp": "481.6",
+      "errorBp": "-53.3",
+      "naiveErrorBp": "-459.5"
+    }
+  ]
+}
