@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   },
   cacheComponents: true,
   partialPrefetching: true,
-  transpilePackages: ["@glade/shared", "@glade/engine", "@glade/calendar", "@glade/tm-client", "@glade/stamp"],
+  transpilePackages: ["@glade/shared", "@glade/engine", "@glade/calendar", "@glade/tm-client", "@glade/stamp", "@glade/db", "@glade/paper"],
   turbopack: {
     rules: {
       "*.css": {

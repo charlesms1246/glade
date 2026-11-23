@@ -11,6 +11,7 @@
     "@glade/calendar": "workspace:^",
     "@glade/db": "workspace:^",
     "@glade/engine": "workspace:^",
+    "@glade/paper": "workspace:^",
     "@glade/shared": "workspace:^",
     "@glade/stamp": "workspace:^",
     "@glade/tm-client": "workspace:^",
