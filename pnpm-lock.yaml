@@ -159,6 +159,9 @@ importers:
       '@glade/tm-client':
         specifier: workspace:^
         version: link:../../packages/tm-client
+      '@simplewebauthn/server':
+        specifier: ^14.1.0
+        version: 14.1.0
       decimal.js:
         specifier: ^10.6.0
         version: 10.6.0

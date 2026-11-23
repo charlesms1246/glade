@@ -15,6 +15,7 @@
     "@glade/shared": "workspace:^",
     "@glade/stamp": "workspace:^",
     "@glade/tm-client": "workspace:^",
+    "@simplewebauthn/server": "^14.1.0",
     "decimal.js": "^10.6.0",
     "drizzle-orm": "^0.45.4",
     "pino": "^10.4.0",
