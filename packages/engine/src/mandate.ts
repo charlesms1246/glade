@@ -35,7 +35,8 @@ export interface CheckIntent {
 }
 
 export interface CheckContext {
-  env: TmEnv;
+  /** Where the order executes. "paper" simulates fills on live prices; "prod" is always refused. */
+  env: TmEnv | "paper";
   maxOrderUsd: DecimalLike;
   mandate: ActiveMandate | null;
   /** Present when the user just approved a plan with a passkey assertion. */

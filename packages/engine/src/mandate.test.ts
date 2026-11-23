@@ -50,6 +50,10 @@ describe("mandateCheck (automation)", () => {
     expect(mandateCheck(short, ctx).ok).toBe(true);
     expect(mandateCheck({ ...short, notionalUsd: "21" }, ctx).ok).toBe(false);
   });
+  it("allows paper execution under the same rules", () => {
+    expect(mandateCheck(short, { ...ctx, env: "paper" }).ok).toBe(true);
+    expect(mandateCheck({ ...short, notionalUsd: "21" }, { ...ctx, env: "paper" }).ok).toBe(false);
+  });
   it("property: no intent of any kind passes in production", () => {
     fc.assert(
       fc.property(fc.constantFrom("automation", "user"), fc.constantFrom("sell", "buy"), fc.boolean(), (source, side, reduceOnly) =>
