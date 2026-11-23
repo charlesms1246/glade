@@ -124,3 +124,38 @@ export async function insertCloseIntents(db: Db, drafts: CloseIntentDraft[]): Pr
     await tx.update(hedges).set({ status: "unwinding" }).where(eq(hedges.id, drafts[0]!.hedgeId));
   });
 }
+
+/**
+ * Intents stuck in "executing" (worker crashed or an order outcome was unknown). Returned for another
+ * executor pass, which only polls an order that may already be live and never re-executes it.
+ * Row locks keep two workers from reclaiming the same intent at once.
+ */
+export async function reclaimStale(db: Db, olderThanMs: number, limit: number): Promise<ClaimedIntent[]> {
+  const cutoff = new Date(Date.now() - olderThanMs);
+  const rows = await db.execute<{ id: string }>(sql`
+    select i.id from intents i
+    where i.status = 'executing' and i.created_at < ${cutoff}
+      and not exists (
+        select 1 from orders o where o.intent_id = i.id and o.created_at >= ${cutoff}
+      )
+    order by i.created_at limit ${limit}
+    for update skip locked`);
+  const ids = (rows as unknown as { id: string }[]).map((r) => r.id);
+  if (ids.length === 0) return [];
+  const full = await db.select().from(intents).where(inArray(intents.id, ids));
+  return full.map((r) => ({
+    id: r.id,
+    userId: r.userId,
+    kind: r.kind,
+    assetId: r.assetId,
+    side: r.side,
+    qty: r.qty,
+    qtyUnit: r.qtyUnit as "base" | "quote",
+    leverage: r.leverage,
+    reduceOnly: r.reduceOnly,
+    planHash: r.planHash,
+    inputs: r.inputs,
+    hedgeId: r.hedgeId,
+    reason: r.reason,
+  }));
+}
