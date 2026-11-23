@@ -21,6 +21,7 @@ export function usePoll<T>(path: string, ms = 8000) {
     const es = new EventSource("/api/stream");
     const onEvent = () => void refresh();
     es.addEventListener("intent", onEvent);
+    es.addEventListener("floor", onEvent);
     return () => {
       clearTimeout(first);
       clearInterval(t);

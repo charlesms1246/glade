@@ -20,7 +20,7 @@ export async function GET(req: Request) {
         }
       };
       const onEvent = (e: GladeEvent) => {
-        if (e.type === "bell" || (e.type === "intent" && uid && e.data?.userId === uid)) {
+        if (e.type === "bell" || ((e.type === "intent" || e.type === "floor") && uid && e.data?.userId === uid)) {
           write(`event: ${e.type}\ndata: ${JSON.stringify(e.data)}\n\n`);
         }
       };

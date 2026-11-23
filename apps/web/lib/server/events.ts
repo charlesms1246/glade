@@ -4,6 +4,7 @@ import postgres from "postgres";
 
 export type GladeEvent =
   | { type: "intent"; data: { userId: string; intentId: string; outcome: string; explanation: string } }
+  | { type: "floor"; data: { userId: string; explanation: string } }
   | { type: "bell"; data: unknown };
 
 const g = globalThis as unknown as { __gladeEvents?: EventEmitter };
