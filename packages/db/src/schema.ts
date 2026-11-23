@@ -3,6 +3,7 @@ import {
   bigserial,
   boolean,
   customType,
+  date,
   index,
   integer,
   jsonb,
@@ -254,3 +255,87 @@ export const priceCache = pgTable(
   },
   (t) => [primaryKey({ columns: [t.symbol, t.assetClass] })],
 );
+
+// ---- paper venue (simulated trading; no real funds) -----------------------
+
+export const paperAccounts = pgTable("paper_accounts", {
+  userId: uuid("user_id").primaryKey().references(() => appUsers.id),
+  cashUsd: money("cash_usd").notNull(),
+  // Last funding hour applied: floor(epoch ms / 3600000).
+  fundingHour: integer("funding_hour"),
+  createdAt: ts("created_at").notNull().defaultNow(),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
+
+export const paperHoldings = pgTable(
+  "paper_holdings",
+  {
+    userId: uuid("user_id").notNull().references(() => paperAccounts.userId),
+    assetId: text("asset_id").notNull(),
+    qty: money("qty").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.assetId] })],
+);
+
+export const paperPositions = pgTable(
+  "paper_positions",
+  {
+    userId: uuid("user_id").notNull().references(() => paperAccounts.userId),
+    assetId: text("asset_id").notNull(),
+    size: money("size").notNull(),
+    entryPrice: money("entry_price").notNull(),
+    margin: money("margin").notNull(),
+    leverage: integer("leverage").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.assetId] })],
+);
+
+export const paperOrders = pgTable(
+  "paper_orders",
+  {
+    id: text("id").primaryKey(),
+    userId: uuid("user_id").notNull().references(() => appUsers.id),
+    assetId: text("asset_id").notNull(),
+    side: side("side").notNull(),
+    qty: money("qty").notNull(),
+    qtyUnit: text("qty_unit").notNull(),
+    leverage: integer("leverage"),
+    reduceOnly: boolean("reduce_only").notNull(),
+    status: text("status").notNull(),
+    payload: text("payload").notNull(),
+    quotePrice: money("quote_price").notNull(),
+    createdAt: ts("created_at").notNull(),
+    executedQty: money("executed_qty"),
+    executedVwap: money("executed_vwap"),
+    fee: money("fee"),
+    failureReason: text("failure_reason"),
+    executedAt: ts("executed_at"),
+  },
+  (t) => [index("paper_orders_user").on(t.userId, t.createdAt)],
+);
+
+export const paperLedger = pgTable(
+  "paper_ledger",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    userId: uuid("user_id").notNull().references(() => appUsers.id),
+    at: ts("at").notNull(),
+    kind: text("kind").notNull(),
+    amountUsd: money("amount_usd").notNull(),
+    assetId: text("asset_id"),
+    orderId: text("order_id"),
+    meta: jsonb("meta"),
+  },
+  (t) => [index("paper_ledger_user_at").on(t.userId, t.at)],
+);
+
+// ---- Floor loop state (CPPI ratchet peak and trade cooldown) -----------------
+
+export const floorState = pgTable("floor_state", {
+  userId: uuid("user_id").primaryKey().references(() => appUsers.id),
+  peakUsd: money("peak_usd"),
+  lastTradeAt: ts("last_trade_at"),
+  tradesDay: date("trades_day"),
+  tradesToday: integer("trades_today").notNull().default(0),
+  updatedAt: ts("updated_at").notNull().defaultNow(),
+});
