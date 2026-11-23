@@ -1,6 +1,7 @@
 import type { Db } from "@glade/db";
 import { schema } from "@glade/db";
-import { ENGINE_VERSION, normalizeSymbol } from "@glade/engine";
+import type { ClosureKind } from "@glade/calendar";
+import { ENGINE_VERSION, normalizeSymbol, referenceSpotSymbol } from "@glade/engine";
 import { createPaperVenue, drizzlePaperRepo, drizzleRegistry, paperUsersWithPositions } from "@glade/paper";
 import { dec, Decimal, type Env } from "@glade/shared";
 import { parseMasterKey } from "@glade/stamp";
@@ -11,6 +12,8 @@ import { activeFloorUsers, hasOpenIntents, insertFloorIntents, pendingOnboarding
 import { claimIntents, dueBellHedges, insertCloseIntents, policyQueries, reclaimStale, recordIntentResult } from "./db/intents";
 import { executorRepo, logDecision, onboardingRepo, publish } from "./db/repos";
 import { createExecutor } from "./executor";
+import { bellReportDb } from "./bell-report/db";
+import { runBellReportJob } from "./bell-report/job";
 import { unwindDrafts } from "./jobs/bell-unwind";
 import { runPendingIntents, type ClaimedIntent } from "./jobs/intent-runner";
 import { runOnboardingJob } from "./jobs/onboarding-job";
@@ -35,6 +38,8 @@ export interface TradingDeps {
   cache: PriceCache;
   stream: MarketStream;
   log: Logger;
+  /** Calibrated σ of the Bell estimate by closure kind. */
+  sigma: Record<ClosureKind, Decimal>;
 }
 
 /** Wires the paper venue, executor and the worker's trading jobs. Returns a stop function. */
@@ -213,6 +218,35 @@ export function startTrading(d: TradingDeps): () => void {
       ),
     ),
   ];
+
+  // Spot reads for Bell reports use a listed issuer symbol (e.g. AAPLC for AAPL).
+  let spotSymbols: string[] | undefined;
+  const spotSymbolFor = async (group: string) => {
+    if (!spotSymbols) {
+      const r = schema.assetRegistry;
+      spotSymbols = (await db.select({ s: r.symbol }).from(r).where(and(eq(r.env, env.TM_ENV), eq(r.type, "spot"), eq(r.assetClass, "stock")))).map((x) => x.s);
+    }
+    return referenceSpotSymbol(group, spotSymbols) ?? group;
+  };
+
+  timers.push(
+    every("bell_report", 60_000, async () => {
+      const r = await runBellReportJob(
+        {
+          ...bellReportDb(db),
+          spotPriceAt: async (symbol, at) => {
+            const h = await tm.priceHistory({ symbol: await spotSymbolFor(symbol), window: "15m", resolution: "1m", asOf: new Date(at.getTime() + 1).toISOString() });
+            return h.points?.at(-1)?.price ?? null;
+          },
+          logDecision: (userId, x) => logDecision(db, { userId, engineVersion: ENGINE_VERSION, ...x }),
+          sigma: d.sigma,
+          log: (event, fields) => log.warn(fields, event),
+        },
+        new Date(),
+      );
+      if (r.reported.length) log.info({ hedges: r.reported }, "bell_reported");
+    }),
+  );
 
   timers.push(
     every("funding", 5 * 60_000, async () => {

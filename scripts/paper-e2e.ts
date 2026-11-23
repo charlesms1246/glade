@@ -1,21 +1,24 @@
 // End-to-end PAPER test of the worker's trading wiring for one user (no real money; production orders
-// are refused in code). Onboards/funds the paper account, buys paper stock, signs a Floor mandate,
-// waits for the worker to open a short perp hedge, loosens the floor, waits for the reduce-only close,
-// then revokes the mandate.
+// are refused in code). Onboards/funds the paper account, buys paper stock, signs a Floor mandate with a
+// software passkey, waits for the worker to open a short perp hedge, checks that an edited mandate stops
+// automation, signs a looser mandate, waits for the reduce-only close, then revokes the mandate.
 //   pnpm exec tsx scripts/paper-e2e.ts --name demo-1
 import { existsSync, readFileSync } from "node:fs";
 import { createDb, schema } from "@glade/db";
 import { createPaperVenue, drizzlePaperRepo, drizzleRegistry } from "@glade/paper";
-import { dec, loadEnv, TM_BASE_URLS } from "@glade/shared";
+import { mandateHash, type MandateTerms } from "@glade/engine";
+import { dec, loadEnv, planChallenge, TM_BASE_URLS } from "@glade/shared";
 import { parseMasterKey, stampPayload } from "@glade/stamp";
 import { apiKeyMinter, createTmClient, TokenManager, type OrgKey } from "@glade/tm-client";
 import { and, desc, eq } from "drizzle-orm";
 import pino from "pino";
 import { onboardingRepo } from "../apps/worker/src/db/repos";
 import { PriceCache } from "../apps/worker/src/market/price-cache";
+import { loadBellSigma } from "../apps/worker/src/config";
 import { MarketStream } from "../apps/worker/src/market/stream";
 import { loadSigner } from "../apps/worker/src/onboarding/onboard";
 import { startTrading } from "../apps/worker/src/trading";
+import { createSoftPasskey } from "./lib/soft-passkey";
 
 if (existsSync(".env")) process.loadEnvFile(".env");
 const env = { ...loadEnv(), FLOOR_COOLDOWN_SEC: 1 };
@@ -29,7 +32,8 @@ const tm = createTmClient({ restBase: urls.rest, tokens });
 const cache = new PriceCache();
 const stream = new MarketStream({ url: urls.ws, cache, tm });
 stream.start();
-const stop = startTrading({ db, tm, tokens, env, cache, stream, log });
+const sigma = loadBellSigma("docs/evidence/bell-calibration-NVDA.json");
+const stop = startTrading({ db, tm, tokens, env, cache, stream, log, sigma });
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function until<T>(label: string, fn: () => Promise<T | null | undefined | false>, timeoutMs = 90_000): Promise<T> {
@@ -77,24 +81,60 @@ try {
 
   const p0 = await me.portfolio();
   console.log(`     equity ${p0.total_usd}, cash ${p0.cash_usd}`);
-  await db.update(schema.mandates).set({ status: "revoked", revokedAt: new Date() }).where(and(eq(schema.mandates.userId, uid), eq(schema.mandates.status, "active")));
-  const [last] = await db.select({ v: schema.mandates.version }).from(schema.mandates).where(eq(schema.mandates.userId, uid)).orderBy(desc(schema.mandates.version)).limit(1);
-  await db.delete(schema.floorState).where(eq(schema.floorState.userId, uid));
-  // Floor at 99.5% of current equity: almost no cushion, so the worker should hedge most of the stock.
-  const [m] = await db
-    .insert(schema.mandates)
-    .values({ userId: uid, version: (last?.v ?? 0) + 1, floorPct: "0.995", multiplier: "4", ratchet: false, baseUsd: p0.total_usd!, leverageMax: "3", allowedPerps: [nvdaPerp.assetId], maxTradesDay: 20, status: "active", mandateHash: "paper-e2e", webauthnAssertion: { e2e: true }, signedAt: new Date() })
-    .returning();
 
-  const opened = await until("Floor opened a short NVDA perp hedge", async () => (await me.positions()).positions.find((x) => x.asset_id === nvdaPerp.assetId && x.side === "short"));
+  // A software passkey stands in for the user's device; the worker verifies its signature like a real one.
+  const passkey = createSoftPasskey(env.WEBAUTHN_RP_ID, env.APP_ORIGIN);
+  await db.insert(schema.passkeys).values({ userId: uid, credentialId: passkey.credentialId, publicKey: passkey.cosePublicKey, counter: 0 });
+
+  const revokeActive = () =>
+    db.update(schema.mandates).set({ status: "revoked", revokedAt: new Date() }).where(and(eq(schema.mandates.userId, uid), eq(schema.mandates.status, "active")));
+  const signMandate = async (floorPct: string) => {
+    await revokeActive();
+    await db.delete(schema.floorState).where(eq(schema.floorState.userId, uid));
+    const [last] = await db.select({ v: schema.mandates.version }).from(schema.mandates).where(eq(schema.mandates.userId, uid)).orderBy(desc(schema.mandates.version)).limit(1);
+    const terms = {
+      userId: uid,
+      version: (last?.v ?? 0) + 1,
+      floorPct,
+      multiplier: "4",
+      ratchet: false,
+      baseUsd: dec(p0.total_usd!).toDecimalPlaces(2).toString(),
+      leverageMax: "3",
+      allowedPerps: [nvdaPerp.assetId],
+      maxTradesDay: 20,
+    } satisfies MandateTerms;
+    const hash = mandateHash(terms);
+    const [m] = await db
+      .insert(schema.mandates)
+      .values({ ...terms, status: "active", mandateHash: hash, webauthnAssertion: { assertion: passkey.assert(planChallenge(hash)), credentialId: passkey.credentialId }, signedAt: new Date() })
+      .returning();
+    return m!;
+  };
+
+  // Floor at 99.5% of current equity: almost no cushion, so the worker should hedge most of the stock.
+  const m1 = await signMandate("0.995");
+  const opened = await until("Floor opened a short NVDA perp hedge under a passkey-signed mandate", async () =>
+    (await me.positions()).positions.find((x) => x.asset_id === nvdaPerp.assetId && x.side === "short"),
+  );
   console.log(`     short ${opened.size} @ ${opened.entry_price}, margin ${opened.margin_used}, liq ${opened.liquidation_price}`);
 
-  await db.update(schema.mandates).set({ floorPct: "0.5" }).where(eq(schema.mandates.id, m!.id));
+  // Tamper: loosen the signed mandate in the database. The worker must refuse to act on it.
+  await db.update(schema.mandates).set({ floorPct: "0.5" }).where(eq(schema.mandates.id, m1.id));
   await db.update(schema.floorState).set({ lastTradeAt: null }).where(eq(schema.floorState.userId, uid));
+  await until("edited mandate refused by policy", async () => {
+    const [d] = await db.select().from(schema.decisions).where(and(eq(schema.decisions.userId, uid), eq(schema.decisions.action, "intent_rejected"))).orderBy(desc(schema.decisions.at)).limit(1);
+    return d && d.explanation.includes("no active mandate") ? d : null;
+  });
+  const stillOpen = (await me.positions()).positions.find((x) => x.asset_id === nvdaPerp.assetId && dec(x.size ?? "0").gt(0));
+  console.log(`     position untouched after tamper: ${stillOpen?.size === opened.size}`);
+
+  // A properly signed looser mandate: the worker closes the hedge.
+  const m2 = await signMandate("0.5");
   await until("Floor closed the hedge with a reduce-only buy", async () => !(await me.positions()).positions.some((x) => x.asset_id === nvdaPerp.assetId && dec(x.size ?? "0").gt(0)));
 
-  await db.update(schema.mandates).set({ status: "revoked", revokedAt: new Date() }).where(eq(schema.mandates.id, m!.id));
-  const log_ = await db.select().from(schema.decisions).where(eq(schema.decisions.userId, uid)).orderBy(desc(schema.decisions.at)).limit(6);
+  await db.update(schema.mandates).set({ status: "revoked", revokedAt: new Date() }).where(eq(schema.mandates.id, m2.id));
+  await db.delete(schema.passkeys).where(eq(schema.passkeys.credentialId, passkey.credentialId));
+  const log_ = await db.select().from(schema.decisions).where(eq(schema.decisions.userId, uid)).orderBy(desc(schema.decisions.at)).limit(8);
   console.log("activity log:");
   for (const d of log_.reverse()) console.log(`  ${d.action.padEnd(17)} ${d.explanation}`);
   const p1 = await me.portfolio();

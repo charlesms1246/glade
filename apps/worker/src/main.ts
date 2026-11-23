@@ -100,7 +100,7 @@ async function tick() {
 const timer = setInterval(tick, TICK_MS);
 void tick();
 // Execution is paper only: fills are simulated on live prices, and production orders are refused in code.
-const stopTrading = startTrading({ db, tm, tokens, env, cache, stream, log });
+const stopTrading = startTrading({ db, tm, tokens, env, cache, stream, log, sigma });
 log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(tokens) }, "worker started");
 
 async function shutdown() {
