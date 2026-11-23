@@ -1,0 +1,22 @@
+[Unit]
+Description=Glade worker (market stream, Bell, executor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=glade
+WorkingDirectory=/opt/glade/apps/worker
+# Runs as root ("+") to pull secrets from Secret Manager into /etc/glade before each start.
+ExecStartPre=+/opt/glade/deploy/gcp/fetch-secrets.sh
+ExecStart=/usr/bin/env pnpm exec tsx --env-file=/etc/glade/env src/main.ts
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=15
+NoNewPrivileges=true
+ProtectSystem=full
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
