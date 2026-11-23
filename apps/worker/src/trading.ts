@@ -66,6 +66,7 @@ export function startTrading(d: TradingDeps): () => void {
 
   // The executor's policy callback sees only the ExecIntent; the full stored row is looked up here.
   const inFlight = new Map<string, ClaimedIntent>();
+  const verifiedMandates = new Set<string>();
   const executor = createExecutor(venue, {
     repo: executorRepo(db),
     signerFor: (userId) => loadSigner(onboarding, masterKey, userId),
@@ -84,6 +85,7 @@ export function startTrading(d: TradingDeps): () => void {
           getActiveMandate: policy.getActiveMandate,
           tradesToday: policy.tradesToday,
           riskyValue,
+          verifiedMandates,
         },
         new Date(),
       );

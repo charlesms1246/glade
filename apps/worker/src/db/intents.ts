@@ -1,10 +1,10 @@
-import type { ActiveMandate } from "@glade/engine";
 import { schema, type Db } from "@glade/db";
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import type { ExecResult } from "../executor/types";
 import type { CloseIntentDraft } from "../jobs/bell-unwind";
 import { explainResult, type ClaimedIntent } from "../jobs/intent-runner";
-import type { StoredPasskey } from "../policy/authorize";
+import type { SignedMandate, StoredPasskey } from "../policy/authorize";
+import { Decimal } from "@glade/shared";
 import { logDecision, publish } from "./repos";
 
 const { intents, orders, hedges, passkeys, mandates } = schema;
@@ -80,12 +80,34 @@ export function policyQueries(db: Db) {
         .where(and(eq(passkeys.userId, userId), eq(passkeys.credentialId, credentialId)));
       return p ? { credentialId: p.credentialId, publicKey: p.publicKey, transports: p.transports } : null;
     },
-    async getActiveMandate(userId: string): Promise<ActiveMandate | null> {
+    async getActiveMandate(userId: string): Promise<SignedMandate | null> {
       const [m] = await db
         .select()
         .from(mandates)
         .where(and(eq(mandates.userId, userId), eq(mandates.status, "active")));
-      return m ? { status: m.status, allowedPerps: m.allowedPerps, leverageMax: m.leverageMax, maxTradesDay: m.maxTradesDay } : null;
+      if (!m) return null;
+      const n = (v: string) => new Decimal(v).toString();
+      return {
+        id: m.id,
+        status: m.status,
+        allowedPerps: m.allowedPerps,
+        leverageMax: m.leverageMax,
+        maxTradesDay: m.maxTradesDay,
+        // Numeric columns come back padded to scale 18; normalise so the hash matches what was signed.
+        terms: {
+          userId: m.userId,
+          version: m.version,
+          floorPct: n(m.floorPct),
+          multiplier: n(m.multiplier),
+          ratchet: m.ratchet,
+          baseUsd: n(m.baseUsd),
+          leverageMax: n(m.leverageMax),
+          allowedPerps: m.allowedPerps,
+          maxTradesDay: m.maxTradesDay,
+        },
+        storedHash: m.mandateHash,
+        approval: m.webauthnAssertion,
+      };
     },
     async tradesToday(userId: string, now: Date): Promise<number> {
       const midnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));

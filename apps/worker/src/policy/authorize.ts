@@ -1,4 +1,4 @@
-import { mandateCheck, type ActiveMandate, type CheckResult } from "@glade/engine";
+import { mandateCheck, mandateHash, type ActiveMandate, type CheckResult, type MandateTerms } from "@glade/engine";
 import { dec, planChallenge, planHash } from "@glade/shared";
 import { verifyAuthenticationResponse, type AuthenticationResponseJSON } from "@simplewebauthn/server";
 import { z } from "zod";
@@ -45,6 +45,14 @@ export interface StoredPasskey {
   transports?: string[] | null;
 }
 
+/** An active mandate as stored, with what is needed to prove the user signed exactly these terms. */
+export interface SignedMandate extends ActiveMandate {
+  id: string;
+  terms: MandateTerms;
+  storedHash: string;
+  approval: unknown;
+}
+
 export interface PolicyDeps {
   /** Execution environment. Production is always refused by the engine. */
   env: "paper" | "uat" | "prod";
@@ -54,7 +62,9 @@ export interface PolicyDeps {
   origin: string;
   rpID: string;
   getPasskey: (userId: string, credentialId: string) => Promise<StoredPasskey | null>;
-  getActiveMandate: (userId: string) => Promise<ActiveMandate | null>;
+  getActiveMandate: (userId: string) => Promise<SignedMandate | null>;
+  /** Mandate ids already proven authentic in this process. */
+  verifiedMandates?: Set<string>;
   tradesToday: (userId: string, now: Date) => Promise<number>;
   riskyValue: (userId: string) => Promise<string>;
   verify?: typeof verifyAuthenticationResponse;
@@ -106,11 +116,14 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
     assertion = { planHash: hash, approvedAssetIds: plan.data.assetIds };
   }
 
-  const [mandate, tradesToday, riskyValue] = await Promise.all([
+  const [signed, tradesToday, riskyValue] = await Promise.all([
     inp.source === "automation" ? deps.getActiveMandate(row.userId) : Promise.resolve(null),
     deps.tradesToday(row.userId, now),
     deps.riskyValue(row.userId),
   ]);
+
+  let mandate: ActiveMandate | null = signed;
+  if (signed && !(await mandateIsAuthentic(signed, row.userId, deps))) mandate = null;
 
   return mandateCheck(
     {
@@ -135,4 +148,35 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
       userLeverageCap: deps.userLeverageCap,
     },
   );
+}
+
+const approvalSchema = z.object({ assertion: z.unknown(), credentialId: z.string() });
+
+/**
+ * True when the stored terms hash to the stored mandate hash and the user's passkey signed that hash.
+ * A mandate row edited after signing (wider perps, higher leverage) fails here and automation stops.
+ */
+export async function mandateIsAuthentic(m: SignedMandate, userId: string, deps: PolicyDeps): Promise<boolean> {
+  if (deps.verifiedMandates?.has(m.id)) return true;
+  const hash = mandateHash(m.terms);
+  if (hash !== m.storedHash) return false;
+  const a = approvalSchema.safeParse(m.approval);
+  if (!a.success) return false;
+  const pk = await deps.getPasskey(userId, a.data.credentialId);
+  if (!pk) return false;
+  try {
+    const v = await (deps.verify ?? verifyAuthenticationResponse)({
+      response: a.data.assertion as AuthenticationResponseJSON,
+      expectedChallenge: planChallenge(hash),
+      expectedOrigin: deps.origin,
+      expectedRPID: deps.rpID,
+      requireUserVerification: true,
+      credential: { id: pk.credentialId, publicKey: new Uint8Array(pk.publicKey), counter: 0 },
+    });
+    if (!v.verified) return false;
+  } catch {
+    return false;
+  }
+  deps.verifiedMandates?.add(m.id);
+  return true;
 }

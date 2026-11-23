@@ -1,6 +1,7 @@
+import { mandateHash } from "@glade/engine";
 import { planHash } from "@glade/shared";
 import { describe, expect, it } from "vitest";
-import { authorizeIntent, type IntentRow, type PolicyDeps } from "./authorize";
+import { authorizeIntent, type IntentRow, type PolicyDeps, type SignedMandate } from "./authorize";
 
 const plan = {
   kind: "shield",
@@ -78,6 +79,19 @@ describe("authorizeIntent (user-approved)", () => {
   });
 });
 
+const terms = { userId: "u1", version: 1, floorPct: "0.85", multiplier: "4", ratchet: true, baseUsd: "1000", leverageMax: "3", allowedPerps: ["perp-nvda"], maxTradesDay: 10 };
+const signedMandate = (over: Partial<SignedMandate> = {}): SignedMandate => ({
+  id: "m1",
+  status: "active",
+  allowedPerps: ["perp-nvda"],
+  leverageMax: "3",
+  maxTradesDay: 10,
+  terms,
+  storedHash: mandateHash(terms),
+  approval: { assertion: { id: "cred" }, credentialId: "cred" },
+  ...over,
+});
+
 describe("authorizeIntent (automation)", () => {
   const auto = (over: Partial<IntentRow> = {}) =>
     row({ planHash: null, ...over, inputs: { source: "automation", notionalUsd: "10", beta: "1" } });
@@ -85,15 +99,38 @@ describe("authorizeIntent (automation)", () => {
   it("needs an active mandate allowing the perp", async () => {
     expect((await authorizeIntent(auto(), deps(), new Date())).ok).toBe(false);
     const withMandate = deps({
-      getActiveMandate: async () => ({ status: "active", allowedPerps: ["perp-nvda"], leverageMax: "3", maxTradesDay: 10 }),
+      getActiveMandate: async () => signedMandate(),
     });
     expect(await authorizeIntent(auto(), withMandate, new Date())).toEqual({ ok: true });
   });
 
   it("never lets automation open a long perp", async () => {
     const withMandate = deps({
-      getActiveMandate: async () => ({ status: "active", allowedPerps: ["perp-nvda"], leverageMax: "3", maxTradesDay: 10 }),
+      getActiveMandate: async () => signedMandate(),
     });
     expect((await authorizeIntent(auto({ side: "buy", reduceOnly: false }), withMandate, new Date())).ok).toBe(false);
+  });
+});
+
+describe("mandate authenticity", () => {
+  const auto = () => row({ planHash: null, inputs: { source: "automation", notionalUsd: "10", beta: "1" } });
+
+  it("stops automation when the stored terms were changed after signing", async () => {
+    const widened = signedMandate({ terms: { ...terms, leverageMax: "20" } });
+    const r = await authorizeIntent(auto(), deps({ getActiveMandate: async () => widened }), new Date());
+    expect(r).toMatchObject({ ok: false, reasons: expect.arrayContaining(["no active mandate"]) });
+  });
+
+  it("stops automation when the passkey approval does not verify", async () => {
+    const bad = deps({ getActiveMandate: async () => signedMandate(), verify: (async () => ({ verified: false })) as unknown as PolicyDeps["verify"] });
+    expect((await authorizeIntent(auto(), bad, new Date())).ok).toBe(false);
+  });
+
+  it("signs the mandate hash as the challenge and caches a verified mandate", async () => {
+    const d = deps({ getActiveMandate: async () => signedMandate(), verifiedMandates: new Set() });
+    await authorizeIntent(auto(), d, new Date());
+    await authorizeIntent(auto(), d, new Date());
+    expect(d.challenges).toHaveLength(1);
+    expect(Buffer.from(d.challenges[0]!, "base64url").toString("hex")).toBe(mandateHash(terms));
   });
 });
