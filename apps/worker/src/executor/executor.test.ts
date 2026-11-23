@@ -147,6 +147,22 @@ describe("Executor", () => {
     expect([...h.mem.orders.values()][0]!.status).toBe("unknown");
   });
 
+  it("retires an order True Markets still reports initialized after the quote TTL, instead of leaving it unknown", async () => {
+    let n = 0;
+    const h = harness({
+      "POST /orders": () => json(201, { order_id: `o${++n}`, status: "initialized", payloads: [{ digest: "d", payload: "p\n" }] }),
+      "POST /orders/o1/execute": () => json(200, {}),
+      "POST /orders/o2/execute": () => json(200, {}),
+      "GET /orders/o1": () => json(200, { status: "initialized" }),
+      "GET /orders/o2": () => json(200, { status: "initialized" }),
+      "POST /orders/o1/cancel": () => json(200, { order_id: "o1", status: "canceled" }),
+    });
+    expect(await h.exec.execute(intent)).toEqual({ outcome: "failed", reason: "order was never executed" });
+    expect([...h.mem.orders.values()].map((o) => o.status)).toEqual(["failed", "failed"]);
+    expect(h.mem.intents.get("i1")).toBe("failed");
+    expect(h.count("POST /orders/o1/cancel")).toBe(1);
+  });
+
   it("refuses to sign when the policy check fails", async () => {
     const h = harness({ "POST /orders": created() });
     h.deny();

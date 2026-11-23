@@ -4,7 +4,14 @@ import { prodGuard } from "./guard";
 import type { ExecIntent, ExecResult, ExecutorDeps, ExecVenue, OrderRow } from "./types";
 
 const FINAL = new Set(["complete", "canceled", "failed", "failed_funding"]);
-const MAX_ATTEMPTS = 2; // first try + one recreate after quote_stale
+const MAX_ATTEMPTS = 2; // first try + one recreate after quote_stale or a never-executed order
+/**
+ * True Markets quotes expire after about 2 minutes, after which execute fails with quote_stale.
+ * An order still "initialized" past this age can therefore never fill (5 s of slack on top).
+ */
+export const NEVER_EXECUTED_AFTER_MS = 125_000;
+
+type PollResult = ExecResult | { outcome: "never_executed"; row: OrderRow };
 
 /**
  * create → stamp → execute → poll, for one intent. Safe to re-run: an attempt that already
@@ -24,10 +31,25 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
     return policy.ok ? [] : policy.reasons;
   }
 
-  async function poll(intent: ExecIntent, row: OrderRow): Promise<ExecResult> {
+  /** Retire an order that was never executed: best-effort cancel, then mark the attempt failed. */
+  async function abandon(intent: ExecIntent, row: OrderRow): Promise<PollResult> {
+    const user = venue.forUser(intent.venueUserId);
+    try {
+      await user.cancelOrder?.(row.tmOrderId!);
+    } catch (e) {
+      log("cancel_error", { intentId: intent.id, tmOrderId: row.tmOrderId, error: String(e) });
+    }
+    await deps.repo.updateOrder(intent.id, row.attempt, { status: "failed", raw: { reason: "never executed" } });
+    log("never_executed", { intentId: intent.id, attempt: row.attempt, tmOrderId: row.tmOrderId });
+    return { outcome: "never_executed", row: { ...row, status: "failed" } };
+  }
+
+  async function poll(intent: ExecIntent, row: OrderRow): Promise<PollResult> {
     const user = venue.forUser(intent.venueUserId);
     const tmOrderId = row.tmOrderId!;
     const deadline = now() + pollTimeout;
+    // Age of a still-"initialized" order: from the row if known, else from when this poll first saw it.
+    let initializedSince: number | null = row.createdAtMs ?? null;
     for (;;) {
       let o: OrderDetail;
       try {
@@ -54,7 +76,11 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
         await deps.repo.setIntentStatus(intent.id, "failed");
         return { outcome: "failed", reason: o.failure_reason ?? o.status, row: done };
       }
-      if (now() >= deadline) {
+      if (o.status === "initialized") {
+        initializedSince ??= now();
+        if (now() - initializedSince >= NEVER_EXECUTED_AFTER_MS) return abandon(intent, row);
+        // Keep polling past the deadline: an initialized order resolves once its quote expires.
+      } else if (now() >= deadline) {
         await deps.repo.updateOrder(intent.id, row.attempt, { status: "unknown" });
         log("poll_timeout", { intentId: intent.id, tmOrderId });
         return { outcome: "unknown", tmOrderId };
@@ -63,9 +89,15 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
     }
   }
 
+  const neverExecuted = async (intent: ExecIntent): Promise<ExecResult> => {
+    await deps.repo.setIntentStatus(intent.id, "failed");
+    return { outcome: "failed", reason: "order was never executed" };
+  };
+
   async function execute(intent: ExecIntent): Promise<ExecResult> {
     const existing = (await deps.repo.listOrders(intent.id)).sort((a, b) => a.attempt - b.attempt);
     const last = existing.at(-1);
+    let budget = MAX_ATTEMPTS;
 
     // Resume: anything that may have reached True Markets is polled, not repeated.
     if (last?.tmOrderId && !FINAL.has(last.status)) {
@@ -73,14 +105,23 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
         // Created but never signed or executed, so it cannot fill. Start a fresh attempt.
         log("resume_created", { intentId: intent.id, attempt: last.attempt });
       } else {
-        return poll(intent, last);
+        const r = await poll(intent, last);
+        if (r.outcome !== "never_executed") return r;
+        // Recreate at most once in total after a never-executed order.
+        if (last.attempt >= MAX_ATTEMPTS) return neverExecuted(intent);
+        budget = 1;
       }
     }
     if (last?.status === "complete") return { outcome: "complete", tmOrderId: last.tmOrderId!, row: last };
+    if (last?.status === "failed" && (last.raw as { reason?: string } | undefined)?.reason === "never executed") {
+      // Crashed after retiring a never-executed order: the one recreate is still owed, nothing more.
+      if (last.attempt >= MAX_ATTEMPTS) return neverExecuted(intent);
+      budget = 1;
+    }
 
     let attempt = (last?.attempt ?? 0) + 1;
     const firstAttempt = attempt;
-    for (; attempt < firstAttempt + MAX_ATTEMPTS; attempt++) {
+    for (; attempt < firstAttempt + budget; attempt++) {
       const blocked = await gate(intent);
       if (blocked.length) {
         await deps.repo.setIntentStatus(intent.id, "rejected");
@@ -118,7 +159,9 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
       if (payloads.length === 0) {
         // Already submitted by the venue (CeFi): poll only.
         await deps.repo.updateOrder(intent.id, attempt, { status: "submitted" });
-        return poll(intent, { ...row, status: "submitted" });
+        const r = await poll(intent, { ...row, status: "submitted" });
+        if (r.outcome === "never_executed") continue;
+        return r;
       }
 
       // Re-check policy immediately before stamping.
@@ -138,7 +181,9 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
       } catch (e) {
         if (e instanceof TmApiError && e.isAlreadySubmitted) {
           await deps.repo.updateOrder(intent.id, attempt, { status: "submitted" });
-          return poll(intent, { ...row, status: "submitted" });
+          const r = await poll(intent, { ...row, status: "submitted" });
+          if (r.outcome === "never_executed") continue;
+          return r;
         }
         if (e instanceof TmApiError && e.isQuoteStale) {
           await deps.repo.updateOrder(intent.id, attempt, { status: "failed", raw: { error: e.body } });
@@ -148,11 +193,17 @@ export function createExecutor(venue: ExecVenue, deps: ExecutorDeps) {
         // Unknown outcome: the order may or may not be live. Poll rather than retry.
         await deps.repo.updateOrder(intent.id, attempt, { status: "submitted" });
         log("execute_error", { intentId: intent.id, attempt, error: String(e) });
-        return poll(intent, { ...row, status: "submitted" });
+        const r = await poll(intent, { ...row, status: "submitted" });
+        if (r.outcome === "never_executed") continue;
+        return r;
       }
       await deps.repo.updateOrder(intent.id, attempt, { status: "submitted" });
-      return poll(intent, { ...row, status: "submitted" });
+      const r = await poll(intent, { ...row, status: "submitted" });
+      if (r.outcome === "never_executed") continue;
+      return r;
     }
+    const lastRow = (await deps.repo.listOrders(intent.id)).sort((a, b) => a.attempt - b.attempt).at(-1);
+    if ((lastRow?.raw as { reason?: string } | undefined)?.reason === "never executed") return neverExecuted(intent);
     await deps.repo.setIntentStatus(intent.id, "failed");
     return { outcome: "failed", reason: "quote stale after retry" };
   }

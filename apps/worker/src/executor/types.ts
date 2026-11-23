@@ -39,6 +39,8 @@ export interface OrderRow {
   fee?: string | null;
   explorerUrl?: string | null;
   raw?: unknown;
+  /** When the row was created (epoch ms), if the repo knows it. */
+  createdAtMs?: number;
 }
 
 export interface ExecutorRepo {
@@ -54,6 +56,8 @@ export interface ExecVenueUser {
   createOrder(body: CreateOrderRequest): Promise<CreateOrderResponse>;
   executeOrder(orderId: string, signatures: string[]): Promise<unknown>;
   getOrder(orderId: string): Promise<OrderDetail>;
+  /** Optional: used to retire an order that was created but never executed. */
+  cancelOrder?(orderId: string): Promise<unknown>;
 }
 
 export interface ExecVenue {
