@@ -7,13 +7,13 @@ import { and, desc, eq, inArray } from "drizzle-orm";
 import { getBellView } from "./bell";
 import { db } from "./db";
 import { fundingRates, knownStockBases, livePrice, perpListings } from "./market";
+import { bellUnwindAt } from "./plan-rules";
 import { planHeader, type PlanBase, type PlanLeg } from "./plans";
 import { PERP_FEE_BP, venueFor } from "./venue";
 
 export const DEFAULT_LEVERAGE = "2";
 // Smallest perp order increment assumed by the paper venue; quantities round down to it.
 const PERP_SIZE_STEP = "0.001";
-const BELL_UNWIND_MIN = 5;
 
 export interface ShieldRow {
   symbol: string;
@@ -79,7 +79,7 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
   if (kind === "bell") {
     const closure = currentClosure(now);
     if (!closure) return { error: "The market is open; Shield until the bell is offered only while it is closed." };
-    unwindAt = new Date(closure.openAt.getTime() + BELL_UNWIND_MIN * 60_000).toISOString();
+    unwindAt = bellUnwindAt(closure);
   }
   const [{ groups, cash }, perps, funding] = await Promise.all([stockHoldings(userId), perpListings(), fundingRates()]);
   const reasons = new Set<string>();
