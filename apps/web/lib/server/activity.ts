@@ -1,7 +1,8 @@
 import "server-only";
 import { schema } from "@glade/db";
-import { desc, eq, inArray } from "drizzle-orm";
-import { db } from "./db";
+import { dec } from "@glade/shared";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { db, tmEnv } from "./db";
 import type { PlanBase } from "./plans";
 
 export interface ActivityItem {
@@ -32,6 +33,16 @@ export async function activity(userId: string, limit = 50): Promise<ActivityItem
   const orders = intents.length
     ? await db().select().from(schema.orders).where(inArray(schema.orders.intentId, intents.map((i) => i.id)))
     : [];
+  const assetIds = [...new Set(intents.map((i) => i.assetId))];
+  const symbols = new Map(
+    (assetIds.length
+      ? await db()
+          .select({ id: schema.assetRegistry.assetId, symbol: schema.assetRegistry.symbol })
+          .from(schema.assetRegistry)
+          .where(and(eq(schema.assetRegistry.env, tmEnv()), inArray(schema.assetRegistry.assetId, assetIds)))
+      : []
+    ).map((r) => [r.id, r.symbol]),
+  );
   const latest = new Map<string, (typeof orders)[number]>();
   for (const o of orders) if ((latest.get(o.intentId)?.attempt ?? -1) < o.attempt) latest.set(o.intentId, o);
 
@@ -39,8 +50,8 @@ export async function activity(userId: string, limit = 50): Promise<ActivityItem
     ...intents.map((i): ActivityItem => {
       const o = latest.get(i.id);
       const plan = (i.inputs as { plan?: PlanBase }).plan;
-      const symbol = plan?.legs.find((l) => l.assetId === i.assetId)?.symbol ?? "";
-      const amount = i.qtyUnit === "quote" ? `${i.qty} USD of` : i.qty;
+      const symbol = plan?.legs?.find((l) => l.assetId === i.assetId)?.symbol ?? symbols.get(i.assetId) ?? "";
+      const amount = i.qtyUnit === "quote" ? `${dec(i.qty).toFixed(2)} USD of` : dec(i.qty).toFixed();
       return {
         id: `i:${i.id}`,
         at: i.createdAt.toISOString(),
@@ -48,7 +59,7 @@ export async function activity(userId: string, limit = 50): Promise<ActivityItem
         title: `${KIND_TEXT[i.kind] ?? i.kind}: ${i.side} ${amount} ${symbol}${i.kind === "spot_buy" || i.kind === "spot_sell" ? "" : " perp"}`.trim(),
         explanation: i.reason,
         status: o?.status ?? i.status,
-        fill: o ? { qty: o.executedQty, price: o.avgPrice, fee: o.fee, explorerUrl: o.explorerUrl } : null,
+        fill: o ? { qty: o.executedQty && dec(o.executedQty).toFixed(), price: o.avgPrice, fee: o.fee, explorerUrl: o.explorerUrl } : null,
       };
     }),
     ...decisions.map(
