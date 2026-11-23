@@ -1,5 +1,7 @@
+import { currentClosure } from "@glade/calendar";
 import { schema } from "@glade/db";
 import { dec } from "@glade/shared";
+import { eq } from "drizzle-orm";
 import { fail, json, withUser } from "@/lib/server/api";
 import { db } from "@/lib/server/db";
 import { approvePlan, intentInputs, type ApprovalBody } from "@/lib/server/plans";
@@ -19,6 +21,11 @@ export async function POST(req: Request) {
     const closeOk = plan.kind === "bell" ? closes.length === opens.length && closes.every((l) => l.side === "buy") : closes.length === 0;
     if (!plan.ok || opens.length === 0 || !openOk || !closeOk) return fail(400, "This plan cannot be placed.");
 
+    const closure = plan.kind === "bell" ? currentClosure(new Date()) : null;
+    const [session] = closure
+      ? await db().select({ id: schema.bellSessions.id }).from(schema.bellSessions).where(eq(schema.bellSessions.closeAt, closure.closeAt))
+      : [];
+
     const hedgeId = await db().transaction(async (tx) => {
       const [hedge] = await tx
         .insert(schema.hedges)
@@ -29,6 +36,7 @@ export async function POST(req: Request) {
           targetRatio: plan.ratio,
           legs: plan.legs,
           unwindAt: plan.unwindAt ? new Date(plan.unwindAt) : null,
+          bellSessionId: session?.id ?? null,
         })
         .returning({ id: schema.hedges.id });
       const until = plan.unwindAt ? ` until ${new Date(plan.unwindAt).toUTCString()}` : "";

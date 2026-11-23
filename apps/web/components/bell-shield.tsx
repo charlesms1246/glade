@@ -72,6 +72,17 @@ export function BellShield() {
       {offer && (
         <div className="mt-6 rounded-xl bg-sand p-6">
           {offer.plan.unwindAt && <p className="mb-4 text-sm">Unwinds automatically at {at(offer.plan.unwindAt)}. Fees shown include the unwind.</p>}
+          {offer.plan.estimates && offer.plan.estimates.length > 0 && (
+            <ul className="num mb-4 space-y-1 text-sm">
+              {offer.plan.estimates.map((e) => (
+                <li key={e.symbol}>
+                  {e.symbol}: close ${Number(e.close).toFixed(2)}, opening estimate ${Number(e.impliedOpen).toFixed(2)} (
+                  {Number(e.gap) >= 0 ? "+" : "−"}
+                  {Math.abs(Number(e.gap) * 100).toFixed(2)}% ± {(Number(e.band) * 100).toFixed(2)}%)
+                </li>
+              ))}
+            </ul>
+          )}
           <ShieldPlanView plan={offer.plan} />
           <button
             onClick={() =>

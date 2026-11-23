@@ -4,6 +4,7 @@ import { schema } from "@glade/db";
 import { chooseInstrument, groupHoldings, sizeShield, type Holding } from "@glade/engine";
 import { Decimal, dec, dmin } from "@glade/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { getBellView } from "./bell";
 import { db } from "./db";
 import { fundingRates, knownStockBases, livePrice, perpListings } from "./market";
 import { planHeader, type PlanBase, type PlanLeg } from "./plans";
@@ -36,6 +37,8 @@ export interface ShieldPlan extends PlanBase {
   ratio: string;
   leverage: string;
   unwindAt?: string;
+  /** Bell only: the opening estimates the user saw, for the held stocks. */
+  estimates?: { symbol: string; close: string; impliedOpen: string; gap: string; band: string }[];
   rows: ShieldRow[];
   unhedgeable: string[];
   totals: { valueUsd: string; notionalUsd: string; marginUsd: string; requiredUsdc: string; fundingPerDayUsd: string; feesUsd: string };
@@ -142,6 +145,12 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
   // Bell: the approval also covers the reduce-only unwind at the open.
   const closeLegs: PlanLeg[] =
     kind === "bell" ? openLegs.map((l) => ({ assetId: l.assetId, symbol: l.symbol, side: "buy", qty: l.qty, qtyUnit: "base", reduceOnly: true, notionalUsd: l.notionalUsd, beta: l.beta })) : [];
+  const estimates =
+    kind === "bell"
+      ? (await getBellView(now)).cards
+          .filter((c) => c.close && c.impliedOpen && c.gap && rows.some((r) => r.symbol === c.symbol))
+          .map((c) => ({ symbol: c.symbol, close: c.close!, impliedOpen: c.impliedOpen!, gap: c.gap!, band: c.band }))
+      : undefined;
   const fees = rows.filter((r) => !r.rejected).reduce((a, r) => a.plus(r.feeUsd), dec(0));
 
   return {
@@ -149,7 +158,7 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
     kind,
     ratio: dec(ratio).toFixed(),
     leverage: lev.toFixed(),
-    ...(unwindAt ? { unwindAt } : {}),
+    ...(unwindAt ? { unwindAt, estimates } : {}),
     rows,
     unhedgeable,
     totals: {
