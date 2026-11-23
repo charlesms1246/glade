@@ -34,9 +34,15 @@ export async function endSession() {
   (await cookies()).delete(SESSION_COOKIE);
 }
 
+/** The raw session cookie, for long-lived requests that re-check it later. */
+export const sessionToken = async () => (await cookies()).get(SESSION_COOKIE)?.value;
+
+/** The user id a session token is valid for right now, or null. */
+export const userIdFromToken = (token: string | undefined) => unseal<{ uid: string }>("session", token)?.uid ?? null;
+
 /** The signed-in app user id, or null. */
 export async function sessionUserId(): Promise<string | null> {
-  return unseal<{ uid: string }>("session", (await cookies()).get(SESSION_COOKIE)?.value)?.uid ?? null;
+  return userIdFromToken(await sessionToken());
 }
 
 /** For pages: the signed-in user id, or a redirect to sign in. */
