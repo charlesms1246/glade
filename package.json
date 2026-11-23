@@ -28,6 +28,7 @@
     "@glade/stamp": "workspace:^",
     "@glade/tm-client": "workspace:^",
     "@types/node": "^22",
+    "drizzle-orm": "^0.45.4",
     "eslint": "^9",
     "fast-check": "^4.11.0",
     "prettier": "^3.10.1",
