@@ -4,7 +4,6 @@ import { mandateCheck, mandateHash, type CheckContext, type CheckIntent, type Ma
 
 const ctx: CheckContext = {
   env: "uat",
-  allowProd: false,
   maxOrderUsd: "20",
   mandate: { status: "active", allowedPerps: ["p-sp500"], leverageMax: "3", maxTradesDay: 10 },
   assertion: null,
@@ -46,10 +45,17 @@ describe("mandateCheck (automation)", () => {
     expect(mandateCheck({ ...short, notionalUsd: "106" }, ctx).ok).toBe(false);
     expect(mandateCheck(short, { ...ctx, tradesToday: 10 }).ok).toBe(false);
   });
-  it("prod requires ALLOW_PROD and the order cap", () => {
-    expect(mandateCheck(short, { ...ctx, env: "prod" }).ok).toBe(false);
-    expect(mandateCheck(short, { ...ctx, env: "prod", allowProd: true }).ok).toBe(true);
-    expect(mandateCheck({ ...short, notionalUsd: "21" }, { ...ctx, env: "prod", allowProd: true }).ok).toBe(false);
+  it("always refuses production and enforces the order cap", () => {
+    expect(mandateCheck(short, { ...ctx, env: "prod" })).toEqual({ ok: false, reasons: ["production orders are never placed (no real money)"] });
+    expect(mandateCheck(short, ctx).ok).toBe(true);
+    expect(mandateCheck({ ...short, notionalUsd: "21" }, ctx).ok).toBe(false);
+  });
+  it("property: no intent of any kind passes in production", () => {
+    fc.assert(
+      fc.property(fc.constantFrom("automation", "user"), fc.constantFrom("sell", "buy"), fc.boolean(), (source, side, reduceOnly) =>
+        !mandateCheck({ ...short, source, side, reduceOnly } as typeof short, { ...ctx, env: "prod" }).ok,
+      ),
+    );
   });
   it("property: a non-reduce-only buy on a perp is always rejected", () => {
     fc.assert(

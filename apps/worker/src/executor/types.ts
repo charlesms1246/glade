@@ -50,7 +50,6 @@ export interface ExecutorRepo {
 
 export interface ExecutorConfig {
   tmEnv: TmEnv;
-  allowProd: boolean;
   maxOrderUsd: string;
   pollIntervalMs?: number;
   pollTimeoutMs?: number;

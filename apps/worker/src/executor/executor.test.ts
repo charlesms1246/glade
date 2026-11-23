@@ -34,7 +34,7 @@ function harness(routes: Record<string, Route>, config: Partial<ExecutorConfig> 
     repo: mem.repo,
     authorize: async (i) => (authorizeCalls.push(i.id), allow ? { ok: true } : { ok: false, reasons: ["no active mandate"] }),
     signerFor: async () => signer,
-    config: { tmEnv: "uat", allowProd: false, maxOrderUsd: "20", pollIntervalMs: 2000, pollTimeoutMs: 10_000, ...config },
+    config: { tmEnv: "uat", maxOrderUsd: "20", pollIntervalMs: 2000, pollTimeoutMs: 10_000, ...config },
     now: () => t,
     sleep: async (ms) => void (t += ms),
   });
@@ -167,23 +167,19 @@ describe("Executor", () => {
   });
 
   describe("production guard", () => {
-    it("blocks prod orders unless ALLOW_PROD is set", async () => {
-      const h = harness({ "POST /orders": created() }, { tmEnv: "prod", allowProd: false });
-      const r = await h.exec.execute(intent);
-      expect(r.outcome).toBe("rejected");
-      expect(h.calls).toHaveLength(0);
+    it("never places a production order, whatever the size", async () => {
+      for (const notionalUsd of ["0.01", "12", "1000"]) {
+        const h = harness({ "POST /orders": created() }, { tmEnv: "prod" });
+        const r = await h.exec.execute({ ...intent, notionalUsd });
+        expect(r).toEqual({ outcome: "rejected", reasons: ["production orders are never placed (no real money)"] });
+        expect(h.calls).toHaveLength(0);
+        expect(h.authorizeCalls).toHaveLength(0);
+      }
     });
-    it("blocks prod orders above MAX_ORDER_USD even with ALLOW_PROD", async () => {
-      const h = harness({ "POST /orders": created() }, { tmEnv: "prod", allowProd: true, maxOrderUsd: "10" });
+    it("enforces MAX_ORDER_USD on UAT too", async () => {
+      const h = harness({ "POST /orders": created() }, { maxOrderUsd: "10" });
       expect(await h.exec.execute(intent)).toMatchObject({ outcome: "rejected" });
       expect(h.calls).toHaveLength(0);
-    });
-    it("allows a small prod order with ALLOW_PROD", async () => {
-      const h = harness(
-        { "POST /orders": created(), "POST /orders/o1/execute": () => json(200, {}), "GET /orders/o1": complete },
-        { tmEnv: "prod", allowProd: true, maxOrderUsd: "20" },
-      );
-      expect((await h.exec.execute(intent)).outcome).toBe("complete");
     });
   });
 });

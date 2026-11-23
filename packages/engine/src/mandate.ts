@@ -36,7 +36,6 @@ export interface CheckIntent {
 
 export interface CheckContext {
   env: TmEnv;
-  allowProd: boolean;
   maxOrderUsd: DecimalLike;
   mandate: ActiveMandate | null;
   /** Present when the user just approved a plan with a passkey assertion. */
@@ -88,10 +87,9 @@ export function mandateCheck(intent: CheckIntent, ctx: CheckContext): CheckResul
   if (opensRisk && notional.gt(NOTIONAL_HEADROOM.mul(dec(ctx.riskyValue)).mul(dec(ctx.beta))))
     reasons.push("notional exceeds 1.05 × holdings × beta");
 
-  if (ctx.env === "prod") {
-    if (!ctx.allowProd) reasons.push("production orders disabled (ALLOW_PROD)");
-    if (notional.gt(dec(ctx.maxOrderUsd))) reasons.push("notional above MAX_ORDER_USD");
-  }
+  // Glade never trades with real money: production orders are always refused.
+  if (ctx.env === "prod") reasons.push("production orders are never placed (no real money)");
+  if (notional.gt(dec(ctx.maxOrderUsd))) reasons.push("notional above MAX_ORDER_USD");
 
   return reasons.length ? { ok: false, reasons } : { ok: true };
 }

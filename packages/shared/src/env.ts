@@ -1,14 +1,12 @@
 import { z } from "zod";
 
 const flag = z.enum(["0", "1"]);
-const bool01 = flag.transform((v) => v === "1");
 const bool01Default0 = flag.default("0").transform((v) => v === "1");
 const decStr = z.string().regex(/^\d+(\.\d+)?$/, "must be a non-negative decimal");
 
 export const envSchema = z.object({
   TM_ENV: z.enum(["uat", "prod"]),
   TM_ORG_KEY_FILE: z.string().min(1),
-  ALLOW_PROD: bool01,
   MAX_ORDER_USD: decStr,
   SIGNER_MASTER_KEY: z
     .string()

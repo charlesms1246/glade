@@ -4,7 +4,6 @@ import { loadEnv } from "./env";
 const valid = {
   TM_ENV: "uat",
   TM_ORG_KEY_FILE: "./secrets/org-key.json",
-  ALLOW_PROD: "0",
   MAX_ORDER_USD: "20",
   SIGNER_MASTER_KEY: `base64:${Buffer.alloc(32, 7).toString("base64")}`,
   DATABASE_URL: "postgres://u:p@h:5432/db",
@@ -16,7 +15,6 @@ const valid = {
 describe("loadEnv", () => {
   it("parses a valid env and applies defaults", () => {
     const e = loadEnv(valid);
-    expect(e.ALLOW_PROD).toBe(false);
     expect(e.FLOOR_COOLDOWN_SEC).toBe(600);
     expect(e.GLADE_PAUSE_ALL).toBe(false);
   });
