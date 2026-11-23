@@ -9,13 +9,24 @@ const legSchema = z.object({
   beta: z.string(),
 });
 
+export interface LegRef {
+  assetId: string;
+  qty: string;
+}
+
 export interface DueHedge {
   hedgeId: string;
   userId: string;
   /** Inputs of one of the hedge's open intents: carries the approved plan and passkey assertion. */
   openInputs: unknown;
   planHash: string;
+  /** Open legs that filled. Only these are closed. */
+  doneOpens: LegRef[];
+  /** Close legs that already filled. These are not closed again. */
+  doneCloses: LegRef[];
 }
+
+const sameLeg = (a: LegRef, b: { assetId: string; qty: string }) => a.assetId === b.assetId && Number(a.qty) === Number(b.qty);
 
 export interface CloseIntentDraft {
   userId: string;
@@ -44,6 +55,7 @@ export function unwindDrafts(h: DueHedge): CloseIntentDraft[] {
   if (!legs.success) return [];
   return legs.data
     .filter((l) => l.side === "buy" && l.reduceOnly)
+    .filter((l) => h.doneOpens.some((o) => sameLeg(o, l)) && !h.doneCloses.some((c) => sameLeg(c, l)))
     .map((l) => ({
       userId: h.userId,
       hedgeId: h.hedgeId,

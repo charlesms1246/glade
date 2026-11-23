@@ -47,6 +47,9 @@ export async function recordIntentResult(db: Db, engineVersion: string, i: Claim
     if (i.kind === "open" || i.kind === "increase") {
       await db.update(hedges).set({ status: "active", openedAt: new Date() }).where(and(eq(hedges.id, i.hedgeId), inArray(hedges.status, ["planned", "active"])));
     } else if (i.kind === "close") {
+      const [h] = await db.select({ mode: hedges.mode }).from(hedges).where(eq(hedges.id, i.hedgeId));
+      // Bell hedges are finalised by the unwind job once every filled leg has a filled close.
+      if (h?.mode === "bell") return finishRecord(db, engineVersion, i, r);
       const open = await db
         .select({ n: sql<number>`count(*)::int` })
         .from(intents)
@@ -59,6 +62,10 @@ export async function recordIntentResult(db: Db, engineVersion: string, i: Claim
     await db.update(hedges).set({ status: "failed" }).where(and(eq(hedges.id, i.hedgeId), eq(hedges.status, "planned")));
   }
 
+  await finishRecord(db, engineVersion, i, r);
+}
+
+async function finishRecord(db: Db, engineVersion: string, i: ClaimedIntent, r: ExecResult): Promise<void> {
   const explanation = explainResult(i, r);
   await logDecision(db, {
     userId: i.userId,
@@ -151,21 +158,45 @@ export function policyQueries(db: Db) {
   };
 }
 
-/** Bell hedges due for unwind that have no close intents yet. Inserting the drafts is idempotent per hedge. */
+/** Max close attempts per Bell leg before the worker stops retrying and raises an alert. */
+export const MAX_CLOSE_ATTEMPTS = 3;
+
+/**
+ * Bell hedges to unwind now: active hedges past unwind_at with no closes yet, and unwinding hedges
+ * whose closes all ended without filling every leg (retried up to MAX_CLOSE_ATTEMPTS per leg).
+ */
 export async function dueBellHedges(db: Db, now: Date) {
-  const rows = await db.execute<{ hedge_id: string; user_id: string; inputs: unknown; plan_hash: string }>(sql`
-    select h.id as hedge_id, h.user_id, i.inputs, i.plan_hash
+  const rows = await db.execute<{
+    hedge_id: string;
+    user_id: string;
+    inputs: unknown;
+    plan_hash: string;
+    done_opens: { assetId: string; qty: string }[];
+    done_closes: { assetId: string; qty: string }[];
+    failed_closes: number;
+  }>(sql`
+    select h.id as hedge_id, h.user_id, o.inputs, o.plan_hash,
+      coalesce((select json_agg(json_build_object('assetId', i.asset_id, 'qty', i.qty::text)) from intents i
+        where i.hedge_id = h.id and i.kind = 'open' and i.status = 'done'), '[]') as done_opens,
+      coalesce((select json_agg(json_build_object('assetId', i.asset_id, 'qty', i.qty::text)) from intents i
+        where i.hedge_id = h.id and i.kind = 'close' and i.status = 'done'), '[]') as done_closes,
+      (select count(*)::int from intents i where i.hedge_id = h.id and i.kind = 'close' and i.status in ('failed', 'rejected')) as failed_closes
     from hedges h
     join lateral (
       select inputs, plan_hash from intents where hedge_id = h.id and kind = 'open' and status = 'done' limit 1
-    ) i on true
-    where h.mode = 'bell' and h.status = 'active' and h.unwind_at <= ${now.toISOString()}::timestamptz
-      and not exists (select 1 from intents c where c.hedge_id = h.id and c.kind = 'close')`);
-  return (rows as unknown as { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string }[]).map((r) => ({
+    ) o on true
+    where h.mode = 'bell' and h.unwind_at <= ${now.toISOString()}::timestamptz
+      and (h.status = 'active' or h.status = 'unwinding')
+      and not exists (select 1 from intents c where c.hedge_id = h.id and c.kind = 'close' and c.status in ('pending', 'executing'))`);
+  type Row = { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string; done_opens: { assetId: string; qty: string }[]; done_closes: { assetId: string; qty: string }[]; failed_closes: number };
+  return (rows as unknown as Row[]).map((r) => ({
     hedgeId: r.hedge_id,
     userId: r.user_id,
     openInputs: r.inputs,
     planHash: r.plan_hash,
+    doneOpens: r.done_opens,
+    doneCloses: r.done_closes,
+    failedCloses: r.failed_closes,
   }));
 }
 
