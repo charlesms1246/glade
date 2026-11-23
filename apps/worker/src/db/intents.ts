@@ -128,7 +128,7 @@ export async function insertCloseIntents(db: Db, drafts: CloseIntentDraft[]): Pr
 /**
  * Intents stuck in "executing" (worker crashed or an order outcome was unknown). Returned for another
  * executor pass, which only polls an order that may already be live and never re-executes it.
- * Row locks keep two workers from reclaiming the same intent at once.
+ * Only the leader worker (advisory lock) runs this, so no two processes reclaim the same intent.
  */
 export async function reclaimStale(db: Db, olderThanMs: number, limit: number): Promise<ClaimedIntent[]> {
   const cutoff = new Date(Date.now() - olderThanMs);
@@ -138,8 +138,7 @@ export async function reclaimStale(db: Db, olderThanMs: number, limit: number): 
       and not exists (
         select 1 from orders o where o.intent_id = i.id and o.created_at >= ${cutoff}
       )
-    order by i.created_at limit ${limit}
-    for update skip locked`);
+    order by i.created_at limit ${limit}`);
   const ids = (rows as unknown as { id: string }[]).map((r) => r.id);
   if (ids.length === 0) return [];
   const full = await db.select().from(intents).where(inArray(intents.id, ids));
