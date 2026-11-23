@@ -16,6 +16,8 @@ export const envSchema = z.object({
   APP_ORIGIN: z.string().url(),
   WEBAUTHN_RP_ID: z.string().min(1),
   SESSION_SECRET: z.string().min(32),
+  /** Extra origins whose passkey approvals the worker accepts (comma-separated), e.g. local dev. */
+  WEBAUTHN_EXTRA_ORIGINS: z.string().default(""),
   MIN_PERP_NOTIONAL_USD: decStr.default("10"),
   DEFAULT_LEVERAGE: decStr.default("2"),
   FLOOR_COOLDOWN_SEC: z.coerce.number().int().positive().default(600),

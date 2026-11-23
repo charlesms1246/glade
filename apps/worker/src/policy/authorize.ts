@@ -61,8 +61,8 @@ export interface PolicyDeps {
   maxOrderUsd: string;
   /** Leverage cap for user-approved plans without a mandate. */
   userLeverageCap: string;
-  origin: string;
-  rpID: string;
+  origin: string | string[];
+  rpID: string | string[];
   getPasskey: (userId: string, credentialId: string) => Promise<StoredPasskey | null>;
   getActiveMandate: (userId: string) => Promise<SignedMandate | null>;
   /** `${mandateId}:${hash}` pairs already proven authentic in this process. */

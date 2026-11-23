@@ -64,6 +64,9 @@ export function startTrading(d: TradingDeps): () => void {
   const registry = drizzleRegistry(db, env.TM_ENV);
   const venue = createPaperVenue({ repo: drizzlePaperRepo(db), prices, registry });
   const policy = policyQueries(db);
+  // Passkey approvals are accepted from the web app's origin plus any extra (e.g. local dev) origins.
+  const origins = [env.APP_ORIGIN, ...env.WEBAUTHN_EXTRA_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)];
+  const rpIDs = [...new Set([env.WEBAUTHN_RP_ID, ...origins.slice(1).map((o) => new URL(o).hostname)])];
   const onboarding = onboardingRepo(db);
 
   const riskyValue = async (userId: string) => {
@@ -86,8 +89,8 @@ export function startTrading(d: TradingDeps): () => void {
           env: "paper",
           maxOrderUsd: env.MAX_ORDER_USD,
           userLeverageCap: "3",
-          origin: env.APP_ORIGIN,
-          rpID: env.WEBAUTHN_RP_ID,
+          origin: origins,
+          rpID: rpIDs,
           getPasskey: policy.getPasskey,
           getActiveMandate: policy.getActiveMandate,
           tradesToday: policy.tradesToday,
