@@ -1,6 +1,6 @@
 import "server-only";
 import { currentClosure, isOpen, nextClose, nextOpen, type ClosureKind } from "@glade/calendar";
-import { closeSnapshot, gapBand, impliedOpen, SEED_SIGMA } from "@glade/engine";
+import { closeSnapshot, gapBand, impliedOpen, referenceSpotSymbol, SEED_SIGMA } from "@glade/engine";
 import { dec } from "@glade/shared";
 import { cacheLife } from "next/cache";
 import calibration from "../../../../docs/evidence/bell-calibration-NVDA.json";
@@ -37,13 +37,22 @@ function sigmaFor(kind: ClosureKind) {
   return bp(s.byKind.weekend.rmsErrorBp) ?? all;
 }
 
+/** Listed spot symbol for a stock (issuer tokens: AAPLC, NVDAon, ...). */
+async function spotSymbolFor(symbol: string): Promise<string> {
+  "use cache";
+  cacheLife("hours");
+  const stocks = await tmPublic().listAssets({ asset_class: "stock" });
+  return referenceSpotSymbol(symbol, stocks.filter((a) => a.type === "spot").map((a) => a.symbol!).filter(Boolean)) ?? symbol;
+}
+
 /** Close price and perp mark in the last minute before the bell. Immutable once the market has closed. */
 async function closeSnapshotFor(symbol: string, closeAtIso: string) {
   "use cache";
   cacheLife("days");
   const tm = tmPublic();
+  const spot = await spotSymbolFor(symbol);
   const last = async (assetClass?: "perp") =>
-    (await tm.priceHistory({ symbol, window: "15m", resolution: "1m", asOf: closeAtIso, ...(assetClass ? { assetClass } : {}) })).points?.at(-1)?.price ?? null;
+    (await tm.priceHistory({ symbol: assetClass ? symbol : spot, window: "15m", resolution: "1m", asOf: closeAtIso, ...(assetClass ? { assetClass } : {}) })).points?.at(-1)?.price ?? null;
   const [close, mark] = await Promise.all([last(), last("perp")]);
   return close && mark ? { close, mark } : null;
 }

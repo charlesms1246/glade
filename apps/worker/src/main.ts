@@ -1,8 +1,9 @@
 import { readFileSync } from "node:fs";
-import { createDb } from "@glade/db";
-import { ENGINE_VERSION } from "@glade/engine";
+import { createDb, schema } from "@glade/db";
+import { ENGINE_VERSION, referenceSpotSymbol } from "@glade/engine";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { apiKeyMinter, createTmClient, TokenManager, type OrgKey } from "@glade/tm-client";
+import { and, eq } from "drizzle-orm";
 import pino from "pino";
 import { createBellService } from "./bell/service";
 import { BELL_WATCHLIST, loadBellSigma, TICK_MS } from "./config";
@@ -39,9 +40,20 @@ if (!(await tryLeaderLock(db))) {
   process.exit(1);
 }
 
+// Tokenized stocks trade under issuer symbols (AAPLC, NVDAon, ...); market data needs a listed one.
+const reg = schema.assetRegistry;
+const spotSymbols = (
+  await db
+    .select({ symbol: reg.symbol })
+    .from(reg)
+    .where(and(eq(reg.env, env.TM_ENV), eq(reg.type, "spot"), eq(reg.assetClass, "stock")))
+).map((r) => r.symbol);
+if (spotSymbols.length === 0) log.warn("asset_registry is empty; run `pnpm seed:assets`");
+const spotRef = new Map(BELL_WATCHLIST.map((s) => [s, referenceSpotSymbol(s, spotSymbols) ?? s]));
+
 const cache = new PriceCache();
 const stream = new MarketStream({ url: urls.ws, cache, tm, log: (ev, f) => log.info(f, ev) });
-stream.watch(BELL_WATCHLIST.flatMap((symbol) => [{ symbol, cls: "spot" as const }, { symbol, cls: "perp" as const }]));
+stream.watch(BELL_WATCHLIST.flatMap((symbol) => [{ symbol: spotRef.get(symbol)!, cls: "spot" as const }, { symbol, cls: "perp" as const }]));
 stream.start();
 
 const sigma = loadBellSigma(new URL("../../../docs/evidence/bell-calibration-NVDA.json", import.meta.url).pathname);
@@ -49,7 +61,8 @@ const bell = createBellService({
   repo: bellRepo(db),
   cache,
   sigma,
-  priceBefore: async (symbol, cls, at) => {
+  priceBefore: async (group, cls, at) => {
+    const symbol = cls === "spot" ? (spotRef.get(group) ?? group) : group;
     const r = await tm.priceHistory({ symbol, window: "15m", resolution: "1m", asOf: at.toISOString(), ...(cls === "perp" ? { assetClass: cls } : {}) });
     return r.points?.at(-1)?.price ?? null;
   },
@@ -85,7 +98,7 @@ async function tick() {
 
 const timer = setInterval(tick, TICK_MS);
 void tick();
-log.info({ tickMs: TICK_MS, watch: BELL_WATCHLIST, orgMode: Boolean(tokens) }, "worker started");
+log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(tokens) }, "worker started");
 
 async function shutdown() {
   clearInterval(timer);
