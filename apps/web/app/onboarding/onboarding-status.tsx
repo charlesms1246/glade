@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client/http";
 
-type Status = { ready: false } | { ready: true; cashUsd: string };
+type Status = { ready: false } | { ready: true; cashUsd: string; tmLinked: boolean };
 
 const usd = (v: string) => `$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -12,8 +12,9 @@ export function OnboardingStatus() {
   const [status, setStatus] = useState<Status>({ ready: false });
   const [error, setError] = useState<string | null>(null);
 
+  const linked = status.ready && status.tmLinked;
   useEffect(() => {
-    if (status.ready) return;
+    if (linked) return;
     let alive = true;
     const poll = async () => {
       try {
@@ -32,15 +33,15 @@ export function OnboardingStatus() {
       alive = false;
       clearInterval(t);
     };
-  }, [status.ready]);
+  }, [linked]);
 
   if (!status.ready) {
     return (
       <div className="rounded-2xl bg-sand p-7" aria-live="polite">
         <p className="font-medium">Setting up your paper account…</p>
         <p className="mt-2 text-sm text-ink-soft">
-          Glade is creating your trading account and its signing key, then funding it with paper USDC. This usually
-          takes a few seconds.
+          Glade is creating your signing key and funding a paper account with paper USDC. This usually takes a few
+          seconds.
         </p>
         {error && <p className="mt-3 text-sm text-rose">{error}</p>}
       </div>
@@ -52,6 +53,9 @@ export function OnboardingStatus() {
       <p className="text-xs uppercase tracking-wider text-ink-soft">Paper account ready</p>
       <p className="num mt-2 font-display text-4xl text-forest-deep">{usd(status.cashUsd)} paper USDC</p>
       <p className="mt-3 text-sm text-ink-soft">Simulated funds for practice. Prices are live; no real money moves.</p>
+      <p className="mt-2 text-xs text-ink-soft">
+        True Markets account: {status.tmLinked ? "linked" : "pending (optional; paper trading works without it)"}
+      </p>
       <div className="mt-6 flex flex-wrap gap-3">
         <Link href="/buy" className="rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep">
           Buy a stock to protect
