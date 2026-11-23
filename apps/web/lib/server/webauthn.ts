@@ -30,13 +30,13 @@ export interface PendingChallenge {
 }
 
 export async function putChallenge(c: PendingChallenge) {
-  (await cookies()).set(CHALLENGE_COOKIE, seal(c, CHALLENGE_TTL_SEC), cookieOpts(CHALLENGE_TTL_SEC));
+  (await cookies()).set(CHALLENGE_COOKIE, seal("wa", c, CHALLENGE_TTL_SEC), cookieOpts(CHALLENGE_TTL_SEC));
 }
 
 /** Read and clear the pending challenge, so each one is used at most once. */
 export async function takeChallenge(purpose: PendingChallenge["purpose"]): Promise<PendingChallenge | null> {
   const jar = await cookies();
-  const c = unseal<PendingChallenge>(jar.get(CHALLENGE_COOKIE)?.value);
+  const c = unseal<PendingChallenge>("wa", jar.get(CHALLENGE_COOKIE)?.value);
   jar.delete(CHALLENGE_COOKIE);
   return c?.purpose === purpose ? c : null;
 }

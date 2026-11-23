@@ -44,7 +44,7 @@ export const planHeader = (kind: string, userId: string, legs: PlanLeg[]) => ({
 /** Hash a plan, tag it so the server can trust it later, and build the passkey request over the hash. */
 export async function offerPlan<P extends PlanBase>(plan: P) {
   const hash = planHash(plan);
-  return { plan, hash, tag: mac(hash), passkey: await planAssertionOptions(plan.userId, hash) };
+  return { plan, hash, tag: mac(`plan:${hash}`), passkey: await planAssertionOptions(plan.userId, hash) };
 }
 
 export interface ApprovalBody<P> {
@@ -59,7 +59,7 @@ export type Approval<P> = { ok: true; plan: P; hash: string; assertion: Authenti
 export async function approvePlan<P extends PlanBase>(userId: string, body: ApprovalBody<P> | null): Promise<Approval<P>> {
   if (!body?.plan || !body.tag || !body.assertion?.id) return { ok: false, error: "Missing plan or passkey approval." };
   const hash = planHash(body.plan);
-  if (!macOk(hash, body.tag) || body.plan.userId !== userId) return { ok: false, error: "This plan was not issued to you." };
+  if (!macOk(`plan:${hash}`, body.tag) || body.plan.userId !== userId) return { ok: false, error: "This plan was not issued to you." };
   if (Date.now() - Date.parse(body.plan.createdAt) > PLAN_TTL_MS) return { ok: false, error: "This plan expired. Review a fresh one." };
   const [used] = await db().select({ id: schema.intents.id }).from(schema.intents).where(eq(schema.intents.planHash, hash)).limit(1);
   if (used) return { ok: false, error: "This plan was already approved." };

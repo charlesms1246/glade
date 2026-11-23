@@ -119,7 +119,7 @@ export async function offerMandate(userId: string, c: FloorChoice) {
   };
   const hash = mandateHash(terms);
   const issuedAt = new Date().toISOString();
-  const offer: MandateOffer = { terms, perps, hash, issuedAt, tag: mac(`${hash}.${issuedAt}`) };
+  const offer: MandateOffer = { terms, perps, hash, issuedAt, tag: mac(`mandate:${hash}.${issuedAt}`) };
   return { ...offer, passkey: await planAssertionOptions(userId, hash) };
 }
 
@@ -130,7 +130,7 @@ export async function signMandate(
 ): Promise<{ ok: true; id: string } | { ok: false; error: string }> {
   if (!body?.terms || !body.tag || !body.issuedAt || !body.assertion?.id) return { ok: false, error: "Missing mandate or passkey signature." };
   const hash = mandateHash(body.terms);
-  if (!macOk(`${hash}.${body.issuedAt}`, body.tag) || body.terms.userId !== userId) return { ok: false, error: "This mandate was not issued to you." };
+  if (!macOk(`mandate:${hash}.${body.issuedAt}`, body.tag) || body.terms.userId !== userId) return { ok: false, error: "This mandate was not issued to you." };
   if (Date.now() - Date.parse(body.issuedAt) > OFFER_TTL_MS) return { ok: false, error: "This mandate expired. Review it again." };
   if (!(await verifyPlanAssertion(userId, body.assertion, hash))) return { ok: false, error: "The passkey signature did not verify." };
   const t = body.terms;

@@ -1,10 +1,10 @@
 import "server-only";
-import { createHmac, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { macOkWith, macWith, sealWith, unsealWith, type SealType } from "./seal-core";
 
 const SESSION_COOKIE = "glade_session";
-const SESSION_TTL_SEC = 7 * 24 * 3600;
+const SESSION_TTL_SEC = 24 * 3600;
 
 function secret(): string {
   const s = process.env.SESSION_SECRET;
@@ -12,29 +12,11 @@ function secret(): string {
   return s;
 }
 
-export function mac(data: string): string {
-  return createHmac("sha256", secret()).update(data).digest("base64url");
-}
-
-export function macOk(data: string, tag: string): boolean {
-  const a = Buffer.from(mac(data));
-  const b = Buffer.from(tag);
-  return a.length === b.length && timingSafeEqual(a, b);
-}
-
-/** `base64url(json).hmac`, with an `exp` (unix seconds) checked on read. */
-export function seal(payload: object, ttlSec: number): string {
-  const body = Buffer.from(JSON.stringify({ ...payload, exp: Math.floor(Date.now() / 1000) + ttlSec })).toString("base64url");
-  return `${body}.${mac(body)}`;
-}
-
-export function unseal<T>(token: string | undefined): T | null {
-  if (!token) return null;
-  const [body, tag] = token.split(".");
-  if (!body || !tag || !macOk(body, tag)) return null;
-  const data = JSON.parse(Buffer.from(body, "base64url").toString()) as T & { exp: number };
-  return data.exp > Date.now() / 1000 ? data : null;
-}
+/** HMAC tag for server-issued values (plan and mandate offers); callers prefix a domain. */
+export const mac = (data: string) => macWith(secret(), data);
+export const macOk = (data: string, tag: string) => macOkWith(secret(), data, tag);
+export const seal = (typ: SealType, payload: object, ttlSec: number) => sealWith(secret(), typ, payload, ttlSec);
+export const unseal = <T>(typ: SealType, token: string | undefined) => unsealWith<T>(secret(), typ, token);
 
 export const cookieOpts = (maxAge: number) => ({
   httpOnly: true,
@@ -45,7 +27,7 @@ export const cookieOpts = (maxAge: number) => ({
 });
 
 export async function startSession(userId: string) {
-  (await cookies()).set(SESSION_COOKIE, seal({ uid: userId }, SESSION_TTL_SEC), cookieOpts(SESSION_TTL_SEC));
+  (await cookies()).set(SESSION_COOKIE, seal("session", { uid: userId }, SESSION_TTL_SEC), cookieOpts(SESSION_TTL_SEC));
 }
 
 export async function endSession() {
@@ -54,7 +36,7 @@ export async function endSession() {
 
 /** The signed-in app user id, or null. */
 export async function sessionUserId(): Promise<string | null> {
-  return unseal<{ uid: string }>((await cookies()).get(SESSION_COOKIE)?.value)?.uid ?? null;
+  return unseal<{ uid: string }>("session", (await cookies()).get(SESSION_COOKIE)?.value)?.uid ?? null;
 }
 
 /** For pages: the signed-in user id, or a redirect to sign in. */
