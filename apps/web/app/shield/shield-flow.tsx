@@ -78,8 +78,9 @@ export function ShieldFlow() {
           ) : (
             <div className="mt-5 rounded-xl bg-sand p-5 text-sm">
               <p>
-                Close {unshield.plan.legs.length} hedge{unshield.plan.legs.length > 1 ? "s" : ""} with reduce-only buys. Estimated fees{" "}
-                {usd(unshield.plan.feesUsd, 4)}. Your stocks stay as they are.
+                Close {unshield.plan.legs.length} Shield/Bell hedge leg{unshield.plan.legs.length > 1 ? "s" : ""} with reduce-only buys. Estimated
+                fees {usd(unshield.plan.feesUsd, 4)}. Your stocks stay as they are, and hedges placed by your Floor mandate stay with the
+                Floor.
               </p>
               <div className="mt-4 flex gap-3">
                 <button onClick={() => void confirmUnshield()} disabled={busy} className="rounded-full bg-forest px-5 py-2.5 font-medium text-paper hover:bg-forest-deep disabled:opacity-50">

@@ -3,12 +3,13 @@ import { currentClosure } from "@glade/calendar";
 import { schema } from "@glade/db";
 import { chooseInstrument, groupHoldings, sizeShield, type Holding } from "@glade/engine";
 import { Decimal, dec, dmin } from "@glade/shared";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { getBellView } from "./bell";
 import { db } from "./db";
 import { fundingRates, knownStockBases, livePrice, perpListings } from "./market";
 import { bellUnwindAt, legsOverCap, maxOrderUsd } from "./plan-rules";
 import { planHeader, type PlanBase, type PlanLeg } from "./plans";
+import { allocateCloses, type CloseLeg, type OpenHedge } from "./unshield-alloc";
 import { PERP_FEE_BP, venueFor } from "./venue";
 
 export const DEFAULT_LEVERAGE = "2";
@@ -51,7 +52,7 @@ export interface ShieldPlan extends PlanBase {
 
 export interface UnshieldPlan extends PlanBase {
   kind: "unshield";
-  hedgeId: string | null;
+  legs: CloseLeg[];
   feesUsd: string;
   maxOrderUsd: string;
 }
@@ -182,28 +183,36 @@ export async function buildShieldPlan(userId: string, ratio: string, kind: "shie
   };
 }
 
-/** The user's newest shield or bell hedge that is still open. */
-export async function openHedge(userId: string, modes: ("shield" | "bell")[] = ["shield", "bell"]) {
-  const [h] = await db()
-    .select()
-    .from(schema.hedges)
-    .where(and(eq(schema.hedges.userId, userId), inArray(schema.hedges.mode, modes), inArray(schema.hedges.status, ["planned", "active"])))
-    .orderBy(desc(schema.hedges.openedAt))
-    .limit(1);
-  return h ?? null;
-}
-
-/** Reduce-only buys that close every short perp position. */
+/**
+ * Reduce-only buys that close the user's open Shield and Bell hedges, one per hedge leg. Floor positions are left
+ * to the Floor. Hedges whose position is already gone are marked closed.
+ */
 export async function buildUnshieldPlan(userId: string): Promise<UnshieldPlan | { error: string }> {
-  const positions = (await venueFor(userId).positions()).filter((p) => p.side === "short" && p.asset_id && p.size && dec(p.size).gt(0));
-  if (positions.length === 0) return { error: "You have no open hedges to close." };
-  const legs: PlanLeg[] = positions.map((p) => {
-    const notional = dec(p.size!).mul(dec(p.mark_price ?? p.entry_price ?? "0"));
-    return { assetId: p.asset_id!, symbol: p.symbol ?? p.asset_id!, side: "buy", qty: dec(p.size!).toFixed(), qtyUnit: "base", reduceOnly: true, notionalUsd: notional.toFixed(2), beta: "1" };
-  });
+  const h = schema.hedges;
+  const inFlight = sql`exists (select 1 from ${schema.intents} i where i.hedge_id = ${h.id} and i.status in ('pending', 'executing'))`;
+  const [positions, hedges] = await Promise.all([
+    venueFor(userId).positions(),
+    db()
+      .select({ id: h.id, legs: h.legs })
+      .from(h)
+      .where(and(eq(h.userId, userId), inArray(h.mode, ["shield", "bell"]), inArray(h.status, ["planned", "active"]), sql`not ${inFlight}`))
+      .orderBy(asc(h.openedAt)),
+  ]);
+  const shorts = new Map(
+    positions
+      .filter((p) => p.side === "short" && p.asset_id && p.size && dec(p.size).gt(0))
+      .map((p) => [p.asset_id!, { size: p.size!, mark: p.mark_price ?? p.entry_price ?? "0", symbol: p.symbol ?? p.asset_id! }]),
+  );
+  const { legs, emptyHedgeIds } = allocateCloses(
+    hedges.map((x) => ({ id: x.id, legs: (x.legs as OpenHedge["legs"]) ?? [] })),
+    shorts,
+  );
+  if (emptyHedgeIds.length) {
+    await db().update(h).set({ status: "closed", closedAt: new Date() }).where(and(inArray(h.id, emptyHedgeIds), sql`not ${inFlight}`));
+  }
+  if (legs.length === 0) return { error: "You have no open Shield or Bell hedges to close." };
   const cap = maxOrderUsd();
   if (legsOverCap(legs, cap).length) return { error: `A hedge is larger than the per-order limit (${dec(cap).toFixed(2)} USD) and cannot be closed in one order.` };
   const fees = legs.reduce((a, l) => a.plus(dec(l.notionalUsd).mul(PERP_FEE_BP).div(10_000)), dec(0));
-  const hedge = await openHedge(userId);
-  return { ...planHeader("unshield", userId, legs), kind: "unshield", hedgeId: hedge?.id ?? null, feesUsd: fees.toFixed(4), maxOrderUsd: dec(cap).toFixed(2) };
+  return { ...planHeader("unshield", userId, legs), kind: "unshield", legs, feesUsd: fees.toFixed(4), maxOrderUsd: dec(cap).toFixed(2) };
 }

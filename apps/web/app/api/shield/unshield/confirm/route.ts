@@ -9,13 +9,13 @@ export async function POST(req: Request) {
     const r = await commitPlan(
       uid,
       (await readJson(req)) as ApprovalBody<UnshieldPlan> | null,
-      (plan) => (plan.kind !== "unshield" || plan.legs.length === 0 || !plan.legs.every((l) => l.side === "buy" && l.reduceOnly) ? "Not an unshield plan." : null),
+      (plan) => (plan.kind !== "unshield" || plan.legs.length === 0 || !plan.legs.every((l) => l.side === "buy" && l.reduceOnly && l.hedgeId) ? "Not an unshield plan." : null),
       async (tx, a) => {
         const { plan } = a;
         await tx.insert(schema.intents).values(
           plan.legs.map((l) => ({
             userId: uid,
-            hedgeId: plan.hedgeId,
+            hedgeId: l.hedgeId,
             kind: "close" as const,
             assetId: l.assetId,
             side: "buy" as const,
