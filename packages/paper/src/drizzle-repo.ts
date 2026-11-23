@@ -1,9 +1,9 @@
 import { schema, type Db } from "@glade/db";
 import { dec, type TmEnv } from "@glade/shared";
-import { and, asc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, sql } from "drizzle-orm";
 import type { AssetRegistry, PaperAsset, PaperOrder, PaperRepo, PaperState } from "./types";
 
-const { appUsers, assetRegistry, paperAccounts, paperHoldings, paperLedger, paperOrders, paperPositions, signerKeys } = schema;
+const { appUsers, assetRegistry, paperAccounts, paperEquitySnapshots, paperHoldings, paperLedger, paperOrders, paperPositions, signerKeys } = schema;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Conn = Db | Tx;
 
@@ -174,4 +174,35 @@ export async function paperLedgerFor(db: Db, userId: string, limit = 50) {
 export async function paperUsersWithPositions(db: Db): Promise<string[]> {
   const rows = await db.selectDistinct({ id: paperPositions.userId }).from(paperPositions);
   return rows.map((r) => r.id);
+}
+
+/** Every user with a paper account (the equity snapshot job's work list). */
+export async function paperAccountUsers(db: Db): Promise<string[]> {
+  const rows = await db.select({ id: paperAccounts.userId }).from(paperAccounts);
+  return rows.map((r) => r.id);
+}
+
+export interface EquityPoint {
+  at: string;
+  equityUsd: string;
+  stockUsd: string;
+  hedgeNotionalUsd: string;
+  floorUsd: string | null;
+}
+
+/** A user's equity snapshots (15-minute buckets) over the last `sinceDays` days, oldest first. */
+export async function equitySeries(db: Db, userId: string, sinceDays: number, now = new Date()): Promise<EquityPoint[]> {
+  const since = new Date(now.getTime() - sinceDays * 86_400_000);
+  const rows = await db
+    .select()
+    .from(paperEquitySnapshots)
+    .where(and(eq(paperEquitySnapshots.userId, userId), gte(paperEquitySnapshots.at, since)))
+    .orderBy(asc(paperEquitySnapshots.at));
+  return rows.map((r) => ({
+    at: r.at.toISOString(),
+    equityUsd: n(r.equityUsd),
+    stockUsd: n(r.stockUsd),
+    hedgeNotionalUsd: n(r.hedgeNotionalUsd),
+    floorUsd: nOrNull(r.floorUsd),
+  }));
 }
