@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fc from "fast-check";
-import { chooseInstrument, groupHoldings, normalizeSymbol, type PerpListing } from "./mapping";
+import { chooseInstrument, groupHoldings, normalizeSymbol, referenceSpotSymbol, type PerpListing } from "./mapping";
 
 const perps: PerpListing[] = [
   { asset_id: "p-nvda", symbol: "NVDA" },
@@ -80,5 +80,32 @@ describe("chooseInstrument", () => {
   });
   it("returns null when no perp is usable", () => {
     expect(chooseInstrument({ economic_asset_id: "e", symbol: "MSFT" }, [])).toBeNull();
+  });
+});
+
+describe("issuer tokens", () => {
+  it("normalises Ondo and xStocks suffixes", () => {
+    expect(normalizeSymbol("NVDAon")).toBe("NVDA");
+    expect(normalizeSymbol("SPCXX")).toBe("SPCX");
+    expect(normalizeSymbol("MUON", new Set(["MU"]))).toBe("MU");
+    expect(normalizeSymbol("TON", new Set(["MU"]))).toBe("TON");
+  });
+
+  it("groups different issuers of one stock together", () => {
+    const g = groupHoldings([
+      { asset_id: "a1", economic_asset_id: "e-nvda-cb", symbol: "NVDAC", value: "10" },
+      { asset_id: "a2", economic_asset_id: "e-nvda-ondo", symbol: "NVDAon", value: "5" },
+      { asset_id: "a3", economic_asset_id: "e-nvda-rh", symbol: "NVDA", value: "1" },
+    ]);
+    expect(g).toHaveLength(1);
+    expect(g[0]!.value.toString()).toBe("16");
+    expect(g[0]!.economic_asset_ids).toEqual(["e-nvda-cb", "e-nvda-ondo", "e-nvda-rh"]);
+  });
+
+  it("picks a reference spot symbol: plain, then C, X, ON", () => {
+    expect(referenceSpotSymbol("NVDA", ["NVDAC", "NVDA", "NVDAon"])).toBe("NVDA");
+    expect(referenceSpotSymbol("AAPL", ["AAPLON", "AAPLX", "AAPLC"])).toBe("AAPLC");
+    expect(referenceSpotSymbol("NVDA", ["NVDAon"])).toBe("NVDAon");
+    expect(referenceSpotSymbol("MSFT", ["NVDA"])).toBeNull();
   });
 });
