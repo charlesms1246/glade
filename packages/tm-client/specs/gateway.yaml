@@ -1,0 +1,4607 @@
+openapi: 3.0.3
+info:
+  title: Trading REST
+  description: |
+    Gateway API for the True Markets trading platform — unified order orchestration, quotes, transfers, and balance management across CeFi and DeFi venues. Recommended for most integrations.
+
+    ## Base URLs
+
+    | Environment | Base URL |
+    |---|---|
+    | Production | `https://api.truemarkets.co/v1/gateway` |
+    | UAT (sandbox) | `https://api.uat.truemarkets.co/v1/gateway` |
+
+    > The legacy `/v1/conductor` base path continues to work for existing integrations but is deprecated — new integrations should use `/v1/gateway`.
+
+    > UAT is the testing environment. It may require VPN/allowlist access for some integrations — contact [support@truemarkets.co](mailto:support@truemarkets.co) if requests time out from a public network.
+
+    ## Authentication
+
+    All endpoints require a JWT access token in the `Authorization: Bearer <token>` header.
+
+    ### Getting credentials
+
+    There are two ways in, and each uses its own keys.
+
+    **Gateway (an organization trading for its users).** Create an organization and an API key in the dashboard, then mint a token with `POST /v1/auth/api-key/token`. An organization token lasts one hour and has no refresh token, so mint a new one before it expires. Sign each user's payloads with their signer key, not the organization API key.
+
+    **Trading API (your own account).**
+
+    1. **Create an account** at [https://www.truemarkets.co](https://www.truemarkets.co) (passkey, email, magic link, or Sign in with Apple).
+    2. **Register an API key** in your account's *API Keys* settings page. Generate an EC P-256 key pair locally and submit only the public key — the private key never leaves your machine. You'll receive a `key_id` (UUID). The same key signs you in and signs your payloads.
+    3. **Mint JWTs** by calling `POST /v1/auth/api-key/token` with `key_id`, a current `timestamp` (Unix seconds, within ±30s of server UTC time), and `signature` — an ES256 (ECDSA P-256 + SHA-256) signature of the message `{key_id}.{timestamp}`, base64url-encoded. The response returns `access_token` and `refresh_token`.
+    4. **Call the Gateway** with `Authorization: Bearer <access_token>`.
+    5. **Refresh** expired access tokens via `POST /v1/auth/token/refresh` with the `refresh_token` — no re-signing required.
+
+    ### Acting for a user
+
+    An organization trades for the users it created. Mint a token from an organization API key,
+    then add `TM-On-Behalf-Of: <user_id>` to any user route: the request reads and writes that
+    user's account. The header is declared on every route that accepts it, and organization-scoped
+    routes reject it.
+
+    ### Quick start
+
+    ```bash
+    # Mint a JWT
+    curl -X POST https://api.truemarkets.co/v1/auth/api-key/token \
+      -H "Content-Type: application/json" \
+      -d '{"key_id":"<UUID>","timestamp":<UNIX_SECONDS>,"signature":"<BASE64URL_ES256_SIG>"}'
+
+    # Compute a quote
+    curl -X POST https://api.truemarkets.co/v1/gateway/quotes \
+      -H "Authorization: Bearer <ACCESS_TOKEN>" \
+      -H "Content-Type: application/json" \
+      -d '{"base_asset":"BTC","quote_asset":"USD","qty":"1000","qty_unit":"quote","side":"buy"}'
+    ```
+
+    > Need to trade on a CeFi venue directly? CeFi direct FIX/REST/WS is institutional only — see the [CeFi Direct REST API](/apis/cefi-direct/rest/v1) reference. Retail traders reach CeFi via this Gateway, which proxies the upstream calls for you.
+
+    ## Order lifecycle
+
+    Orders move through a small set of statuses. The path depends on whether the venue and order type require client-side signing.
+
+    1. **Create** — `POST /orders` with your trade params. The response returns an `order_id` and a `status`. The exception is a DeFi order the account cannot fund (no on-chain balance and no CeFi balance to bridge): the response carries the `quote` with an `Insufficient balance` entry in `quote.issues`, an empty `order_id`, and no `payloads`. The quote is informational so the client can still show the expected output, but no order is created and it cannot be executed.
+    2. **Sign and execute** — for DeFi orders and CeFi buy orders that need a funding bridge, the create response returns `status: initialized` along with an array of unsigned `payloads`. Sign each payload locally with the key that controls the wallet (a Gateway user's signer key, or your own API key) and post the signatures to `POST /orders/{id}/execute`. A CeFi buy then moves to `pending`; a DeFi order settles synchronously to `complete` (immediate fill) or `active` (a limit order resting on-chain).
+    3. **Submitted directly** — for CeFi sell orders and sufficiently funded CeFi buy orders, the create response already returns `status: pending` with no `payloads`. The execute step is skipped. In a paper-trading environment DeFi orders also take this path: they settle against the virtual ledger during create and return a terminal `status` (`complete`) with no `payloads`, so clients must treat an empty `payloads` array as "already submitted" rather than waiting to sign.
+    4. **Settle** — the order transitions out of `pending` to one of:
+        - `complete` — fully filled.
+        - `active` — limit order resting in the order book (can later move to `complete` or `canceled`).
+        - `canceled` — canceled by the user or rejected by exchange/market conditions. A CeFi cancel first passes through `cancel_pending` until the exchange confirms.
+        - `failed` — rejected by the exchange or DeFi execution reverted.
+
+    Poll `GET /orders/{id}/status` (or list orders) to track progression. The `payloads` field in the create response is the signal: if it's non-empty, you need to sign and call execute. If it's empty or absent, the order is already submitted, unless `order_id` is empty and `quote.issues` reports an insufficient-balance problem, which means no order was created.
+
+    ## Support
+    - 📧 [support@truemarkets.co](mailto:support@truemarkets.co)
+  version: "1.56.0"
+  contact:
+    name: True Markets support
+    email: support@truemarkets.co
+servers:
+  - url: https://api.truemarkets.co/v1/gateway
+    description: Production
+  - url: https://api.uat.truemarkets.co/v1/gateway
+    description: UAT (sandbox)
+tags:
+  - name: Quotes
+    description: Request real-time market quotes for trading pairs without creating an order.
+  - name: Orders
+    description: Create, execute, cancel, and monitor orders across CeFi and DeFi.
+  - name: Transfers
+    description: Create, execute, and monitor transfers across CeFi and DeFi.
+  - name: Ramps
+    description: Sell stablecoin balances for fiat through Coinbase or PayPal, funded from CeFi when needed.
+  - name: Custody
+    description: >-
+      Set aside part of the caller's DeFi wallet balance for CeFi trading, and release it again. Tokens stay in the caller's wallet. Nothing is sent on chain or to a bank; for that, see Transfers and Ramps.
+  - name: Paper Trading
+    description: >-
+      Add and remove test funds in a paper-trading environment. These endpoints exist only in non-production paper-trading environments such as UAT; production answers `404`.
+  - name: Transactions
+    description: One unified feed of the caller's orders, transfers, ramps, and received transfers.
+  - name: Assets
+    description: Browse the unified catalog of tradeable assets across DeFi and CeFi venues.
+  - name: Balances
+    description: Query account balances for the authenticated user.
+  - name: Positions
+    description: Query a user's open Hyperliquid perpetual positions.
+paths:
+  # ==================== QUOTE ENDPOINTS ====================
+  /quotes:
+    post:
+      operationId: computeQuote
+      summary: Compute market quote
+      description: >-
+        Non-binding price preview for a market order. `base_asset` and `quote_asset` quote a CeFi pair. `asset_id` quotes any listing for the caller, and needs a bearer token.
+
+
+
+        **Rate limit:** counts against the Quotes limit, 120 a minute (user token, per user); 1,200 a minute (organization api key, per organization); 120 a minute (no token, per ip address). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Quotes
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/QuoteRequest"
+      responses:
+        "200":
+          description: Quote computed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuoteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: quote
+  # ==================== ORDER ENDPOINTS ====================
+  /orders:
+    post:
+      operationId: createOrder
+      summary: Create new order
+      description: |-
+        Creates a new order. For DeFi orders, returns unsigned payloads for client signing.
+
+
+        A DeFi order can spend funds committed to CeFi trading; they are freed before the
+        payloads are returned. If they can't be, the request fails with `422 funds_allocated`
+        (held by open CeFi orders) or `409 release_settling` (retry shortly).
+
+
+        **Rate limit:** counts against the Orders limit, 10 a second and 120 a minute (user token, per user); 100 a second and 1,200 a minute (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrderRequest"
+      responses:
+        "201":
+          description: Order created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateOrderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: order
+    get:
+      operationId: listOrders
+      summary: List user orders
+      description: >
+        Returns a paginated list of the authenticated user's orders with execution data. All statuses are returned by default; narrow the results with the `status` query parameter.
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: limit
+          in: query
+          description: Maximum number of orders to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          description: Comma-separated list of order statuses to filter by
+          required: false
+          schema:
+            type: string
+            example: "pending,canceled"
+        - name: venue
+          in: query
+          description: >
+            Comma-separated list of trading venues to filter by (`defi`, `cefi`). Defaults to all venues (`cefi,defi`) when omitted.
+          required: false
+          schema:
+            type: string
+            default: "cefi,defi"
+            example: "cefi,defi"
+      responses:
+        "200":
+          description: Orders retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetOrdersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /orders/{id}/execute:
+    post:
+      operationId: executeOrder
+      summary: Execute pending order
+      description: Executes a pending order using client-provided signatures for the unsigned payloads
+
+
+        **Rate limit:** counts against the Orders limit, 10 a second and 120 a minute (user token, per user); 100 a second and 1,200 a minute (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteOrderRequest"
+      responses:
+        "200":
+          description: Order execution initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteOrderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: order
+  /orders/all/cancel:
+    post:
+      operationId: cancelAllOrders
+      summary: Cancel all open orders on a venue
+      description: |
+        Cancels all of your open orders on the given venue and returns how many
+        were canceled. Cancellation is asynchronous — confirm final per-order
+        state via `GET /orders`. Only `cefi` is supported today; `defi` returns
+        `501 Not Implemented`.
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CancelAllOrdersRequest"
+      responses:
+        "202":
+          description: Cancellation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelAllOrdersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /orders/{id}/cancel:
+    post:
+      operationId: prepareCancelOrder
+      summary: Cancel a limit or TP/SL order (CeFi or DeFi)
+      description: |
+        Venue-polymorphic cancel. The `payloads` field is the signal:
+        - **CeFi** orders are canceled immediately and return `202 Accepted` with no
+          `payloads`. Poll `GET /orders/{id}/status` for the terminal state.
+        - **DeFi** (Hyperliquid) resting orders return `200 OK` with unsigned
+          `payloads`. Sign each locally and post the signatures to
+          `POST /orders/{id}/cancel/execute`.
+
+        Only cancellable orders (CeFi `pending`/`active` limit orders, DeFi
+        `active` limit or TP/SL trigger orders) can be canceled. An order that
+        is no longer open (`complete`, `canceled` or `failed`) returns `422`
+        with code `order_not_open`; refetch it for its final status. Other
+        orders return 400. An order with `strategy_managed` set is cancelled by
+        its strategy, not here, and returns 422.
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Resting DeFi order; unsigned cancel payloads to sign and execute
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CancelOrderResponse"
+        "202":
+          description: CeFi cancel accepted; poll order status for the terminal state
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /orders/{id}/cancel/execute:
+    post:
+      operationId: executeCancelOrder
+      summary: Execute a resting DeFi order cancellation
+      description: |
+        Submits the client's signatures over the payloads returned by
+        `POST /orders/{id}/cancel` to cancel a resting DeFi limit or TP/SL order.
+        The order moves to `canceled` once the venue confirms, keeping any
+        quantity that filled before the cancel in `executed_qty`/`executed_vwap`.
+        An order that filled before the cancel landed moves to `complete`. An
+        order that is no longer open, including one the venue reports closed
+        before it can say how, returns `422` with code `order_not_open`.
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteOrderRequest"
+      responses:
+        "200":
+          description: Cancellation submitted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteOrderResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /orders/modify/{id}/prepare:
+    post:
+      operationId: prepareModifyTriggers
+      summary: Prepare moving resting DeFi TP/SL orders to new trigger prices
+      description: |-
+        Prepares one Hyperliquid batch modify, under the client-chosen batch `id`,
+        moving each listed order to its new trigger price, and returns the single
+        unsigned payload the client signs and posts to
+        `POST /orders/modify/{id}/execute` with the same `id`. Reusing an `id`
+        that is already prepared returns 409. Every order must be the caller's `active` DeFi TP/SL trigger
+        order on the same account; each keeps the slippage bound it was placed
+        with, scaled to its new trigger. A trigger price on the wrong side of the
+        current price returns 400; an order that is no longer open returns `422`
+        with code `order_not_open`.
+
+
+        **Rate limit:** counts against the Orders limit, 10 a second and 120 a minute (user token, per user); 100 a second and 1,200 a minute (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Client-chosen batch id, reused for `POST /orders/modify/{id}/execute`
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModifyTriggersRequest"
+      responses:
+        "200":
+          description: Unsigned batch payload to sign and execute
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModifyTriggersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      x-rate-limit: order
+  /orders/modify/{id}/execute:
+    post:
+      operationId: executeModifyTriggers
+      summary: Execute a prepared TP/SL modify
+      description: |-
+        Submits the client's signature over the payload `POST /orders/modify/{id}/prepare`
+        returned. Each order reports the trigger price it now rests at, or the
+        venue's `error` when it refused that order, for example a trigger that
+        already fired; refused orders keep their previous trigger. A prepared
+        modify is single-use: an unknown or spent `id` returns 404.
+
+
+        **Rate limit:** counts against the Orders limit, 10 a second and 120 a minute (user token, per user); 100 a second and 1,200 a minute (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: The batch id prepared with `POST /orders/modify/{id}/prepare`
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteOrderRequest"
+      responses:
+        "200":
+          description: Each order's outcome
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecuteModifyTriggersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+      x-rate-limit: order
+  /orders/{id}:
+    get:
+      operationId: getOrder
+      tags:
+        - Orders
+      summary: Get a single order
+      description: Returns full execution details for an order owned by the authenticated user.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrderDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    patch:
+      operationId: modifyOrder
+      tags:
+        - Orders
+      summary: Modify an active limit order
+      description: |-
+        Changes the price and/or quantity of an active CeFi limit order. The change
+        is asynchronous: the order's stored price and quantity update once the
+        exchange confirms the modification. Only active limit orders are modifiable.
+        On a DeFi-settled market, a modification that holds more than the CeFi
+        balance covers first allocates the difference from the user's DeFi wallet
+        and is queued until it lands; if the queued modification then fails, the
+        user is notified and the order keeps its previous price and quantity.
+
+
+        **Rate limit:** counts against the Orders limit, 10 a second and 120 a minute (user token, per user); 100 a second and 1,200 a minute (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ModifyOrderRequest"
+      responses:
+        "202":
+          description: Modification request accepted
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: order
+  /orders/{id}/status:
+    get:
+      operationId: getOrderStatus
+      summary: Get order status
+      description: Returns the current status of an order
+      tags:
+        - Orders
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Order ID
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Order status retrieved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/GetOrderStatusResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /transfers:
+    post:
+      operationId: createTransfer
+      summary: Create new transfer
+      description: >-
+        Creates a new on-chain transfer. Returns unsigned payloads for the client to sign before executing.
+
+
+        For CeFi transfers, `network` is required — retrieve the supported values from `GET /assets` (see the `network` field below). Omit it for DeFi transfers, which derive the network from the asset's chain. A CeFi asset held in the wallet is sent from the wallet.
+
+
+        A transfer can spend funds committed to CeFi trading; they are freed before the payloads are returned. If they can't be, the request fails with `422 funds_allocated` (held by open CeFi orders) or `409 release_settling` (retry shortly).
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Transfers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateTransferRequest"
+      responses:
+        "201":
+          description: Transfer created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+    get:
+      operationId: listTransfers
+      summary: List user transfers
+      description: Returns a paginated list of transfers for the authenticated user
+      tags:
+        - Transfers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: status
+          in: query
+          description: Filter by transfer status
+          required: false
+          schema:
+            $ref: "#/components/schemas/TransferStatus"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of transfers to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Transfers retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTransfersResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /transfers/{id}/execute:
+    post:
+      operationId: executeTransfer
+      summary: Execute pending transfer
+      description: Executes a transfer in `awaiting_signature` status using client-provided signatures
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Transfers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Transfer ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteTransferRequest"
+      responses:
+        "200":
+          description: Transfer execution initiated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /transfers/{id}:
+    get:
+      operationId: getTransfer
+      summary: Get transfer by ID
+      description: Returns the current state of a transfer
+      tags:
+        - Transfers
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Transfer ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Transfer retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TransferDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # ==================== RAMP ENDPOINTS ====================
+  /ramps:
+    post:
+      operationId: createRamp
+      summary: Create a ramp
+      description: >-
+        Creates an onramp that buys crypto with fiat, or an offramp that converts the user's stablecoin balance to fiat, through the given provider. The response's `redirect_url` is the provider page the user completes the ramp on.
+
+
+        An offramp tops any shortfall up from the user's CeFi balance first, which requires enough CeFi PYUSD, and returns a `bridge_plan` when the user's own cross-chain funds must move first: sign its payloads, submit them to `POST /ramps/{id}/bridge/execute`, then call `POST /ramps/{id}/prepare`.
+
+
+        An onramp has nothing to sign, and is subject to provider preconditions: phone verification, accepted provider terms, an active wallet, and amount limits.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateRampRequest"
+      responses:
+        "201":
+          description: Ramp created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateRampResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+    get:
+      operationId: listRamps
+      summary: List user ramps
+      description: Returns a paginated list of ramps for the authenticated user, newest first
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: status
+          in: query
+          description: Filter by ramp status
+          required: false
+          schema:
+            $ref: "#/components/schemas/RampStatus"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of ramps to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Ramps retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListRampsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /ramps/{id}:
+    get:
+      operationId: getRamp
+      summary: Get ramp by ID
+      description: Returns the current state of a ramp
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Ramp ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Ramp retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RampDetail"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /ramps/{id}/bridge/execute:
+    post:
+      operationId: executeRampBridge
+      summary: Execute a ramp's bridge plan
+      description: >-
+        Executes the `bridge_plan` returned by ramp creation, moving the user's own funds from other chains or stablecoins onto the settlement chain. Sign every payload in the plan and submit the signatures in the same order. Offramps only.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Ramp ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RampBridgeExecuteRequest"
+      responses:
+        "200":
+          description: Bridge executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RampBridgeExecuteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /ramps/{id}/prepare:
+    post:
+      operationId: prepareRampTransfer
+      summary: Prepare a ramp's on-chain transfer
+      description: >-
+        Returns the unsigned payloads that send the user's stablecoin to the provider's deposit address. Call this once the provider page has been completed, and after the bridge plan if the create response returned one. Offramps only.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Ramp ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Transfer prepared successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RampTransferPrepareResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /ramps/{id}/execute:
+    post:
+      operationId: executeRampTransfer
+      summary: Execute a ramp's on-chain transfer
+      description: >-
+        Submits the signed transfer, sending the stablecoin to the provider. Once it lands, the provider settles the fiat leg and the ramp's status follows. Offramps only.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Ramps
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Ramp ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RampTransferExecuteRequest"
+      responses:
+        "200":
+          description: Transfer executed successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RampTransferExecuteResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  # ==================== CUSTODY ENDPOINTS ====================
+  /custody/allocations:
+    get:
+      operationId: listAllocations
+      summary: List allocations
+      description: Returns a paginated list of the caller's allocations, newest first.
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: status
+          in: query
+          description: Filter by allocation status
+          required: false
+          schema:
+            $ref: "#/components/schemas/AllocationStatus"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of allocations to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Allocations retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAllocationsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createAllocation
+      summary: Allocate funds to CeFi
+      description: >-
+        Allocates `amount` of the caller's DeFi wallet balance to CeFi trading. This does not move tokens; to send funds out of the wallet, use `POST /transfers`. The tokens stay in the caller's wallet, but the allocated amount can't leave it until it is released with `POST /custody/releases`. The wallet must cover everything the caller has allocated of the asset.
+
+
+        Answers `202` with the allocation in `crediting`. Poll `GET /custody/allocations/{id}` until it is `completed` or `rejected`.
+
+
+        Only one allocation per `asset_id` can be in progress at a time. Another request for the same `asset_id` answers `409`, so retrying after a lost response can't allocate twice.
+
+
+        `asset_id` is a DeFi listing from `GET /assets` that also trades on CeFi. A CeFi listing answers `404`.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAllocationRequest"
+      responses:
+        "202":
+          description: Allocation accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Allocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /custody/allocations/{id}:
+    get:
+      operationId: getAllocation
+      summary: Get allocation
+      description: Returns the current state of an allocation.
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Allocation ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Allocation retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Allocation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /custody/releases:
+    get:
+      operationId: listReleases
+      summary: List releases
+      description: Returns a paginated list of the caller's releases, newest first.
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: status
+          in: query
+          description: Filter by release status
+          required: false
+          schema:
+            $ref: "#/components/schemas/ReleaseStatus"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of releases to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Releases retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListReleasesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    post:
+      operationId: createRelease
+      summary: Release funds from CeFi
+      description: >-
+        Releases `amount` of the caller's allocated balance from CeFi trading, so it is free to leave the caller's DeFi wallet again. This does not move tokens; to send funds out of the wallet, use `POST /transfers`.
+
+
+        Answers `202` with the release in `debiting`. Poll `GET /custody/releases/{id}` until it is `completed` or `rejected`.
+
+
+        Only one release per `asset_id` can be in progress at a time. Another request for the same `asset_id` answers `409`, so retrying after a lost response can't release twice.
+
+
+        `asset_id` is a DeFi listing from `GET /assets` that also trades on CeFi. A CeFi listing answers `404`.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateReleaseRequest"
+      responses:
+        "202":
+          description: Release accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Release"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /custody/releases/{id}:
+    get:
+      operationId: getRelease
+      summary: Get release
+      description: Returns the current state of a release.
+      tags:
+        - Custody
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: id
+          in: path
+          description: Release ID (UUID)
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Release retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Release"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # ==================== ASSET ENDPOINTS ====================
+  /paper/deposits:
+    post:
+      operationId: createPaperDeposit
+      summary: Add test funds (paper trading only)
+      description: >-
+        **Paper-trading environments only.** This endpoint is not served in production, where it answers `404`. It exists so integrations can be exercised end to end in a sandbox without moving real money.
+
+
+        Mints `amount` of the DeFi listing `asset_id` into the caller's paper wallet. When the funds are allocated, the caller's CeFi trading account is set up if it has none and the same amount is allocated to CeFi trading through `POST /custody/allocations`, returned in `allocation`. With `allocate` unset, only a listing with a CeFi market is allocated; a DeFi-only listing stays in the wallet. `allocate: true` on a DeFi-only listing answers `400` before anything is minted. The allocation settles in the background exactly like any other; poll `GET /custody/allocations/{id}` for its outcome.
+
+
+        If the allocation step fails, the minted funds stay in the wallet unallocated.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Paper Trading
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaperDepositRequest"
+      responses:
+        "200":
+          description: Test funds added, and allocated to CeFi trading when `allocation` is present
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaperDepositResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /paper/withdrawals:
+    post:
+      operationId: createPaperWithdrawal
+      summary: Remove test funds (paper trading only)
+      description: >-
+        **Paper-trading environments only.** This endpoint is not served in production, where it answers `404`.
+
+
+        Sends test funds of the DeFi listing `asset_id` out of the caller's paper wallet. Only the wallet's unallocated balance can leave it, so when the wallet cannot cover the request, allocated balance is first released from CeFi trading through `POST /custody/releases`, returned in `release`, and the request waits up to 20 seconds for it to free the funds.
+
+
+        With `amount` omitted, the wallet is emptied: everything the caller has allocated of the listing on CeFi is released first, then the whole wallet balance leaves. With `amount` given, CeFi is released from only when the wallet's unallocated balance falls short, and by at most `amount`. The CeFi release is capped at the caller's allocation of the listing; when omitting `amount`, any CeFi balance beyond that allocation stays on CeFi and is reported in `cefi_unbacked`.
+
+
+        When the release has not freed the funds within the wait, the request answers `409` with code `release_settling` and `metadata.release_id`; retry shortly. A wallet that still cannot cover the request with nothing left on CeFi answers `422` with code `insufficient_balance` or `funds_allocated`.
+
+
+        **Rate limit:** counts against the Money movement limit, 20 a minute and 300 a day (user token, per user); 200 a minute and 3,000 a day (organization api key, per organization). See [Rate limits](/developer-resources/rate-limits).
+      tags:
+        - Paper Trading
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaperWithdrawalRequest"
+      responses:
+        "200":
+          description: Test funds removed from the wallet
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaperWithdrawalResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+      x-rate-limit: money
+  /assets/availability:
+    get:
+      operationId: getAssetAvailability
+      tags:
+        - Assets
+      summary: Get asset availability for the caller's country
+      description: >-
+        Returns the product types and asset classes the caller may trade, based on the country the request originates from. Both lists are allowlists, so a product type that is absent is not available. The response varies per caller, so it is not edge-cached, and the bearer token is optional but should be sent when the caller has one.
+
+
+        These lists describe the venues we run. DeFi spot crypto is held on the caller's own keys and stays tradeable regardless of country, so empty lists do not mean nothing can be traded — a country that is fully restricted, or one that cannot be resolved at all, returns empty lists while DeFi spot crypto orders are still accepted.
+      security:
+        - {}
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Availability retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetAvailability"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /assets/restrictions:
+    get:
+      operationId: getAssetRestrictions
+      tags:
+        - Assets
+      summary: List country restrictions
+      description: >-
+        Returns the countries each set of assets can't be traded from. Each rule selects assets by one `GET /assets` filter. An asset is unavailable from a country if any rule that matches it lists that country. Assets that match no rule, such as DeFi spot crypto, have no restrictions.
+      security: []
+      responses:
+        "200":
+          description: The restriction rules.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetRestrictions"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /assets:
+    get:
+      operationId: listAssets
+      tags:
+        - Assets
+      summary: List tradeable assets
+      description: >-
+        Returns a unified catalog of tradeable assets across DeFi and CeFi venues, listing those with `status` `active` or `sell_only`. Spot assets only by default, so perps and tokenized stocks are opt-in via `type`. Each asset's `networks` lists the rails accepted as the `network` field when creating a CeFi transfer.
+      security: []
+      parameters:
+        - name: venue
+          in: query
+          description: Filter by trading venue
+          required: false
+          schema:
+            $ref: "#/components/schemas/Venue"
+        - name: product_type
+          in: query
+          description: >-
+            Comma-separated list of product types to include (`spot`, `perp`), case-insensitive. Defaults to `spot` when omitted, so perp assets are returned only when requested explicitly.
+          required: false
+          schema:
+            type: string
+            default: spot
+            example: spot,perp
+        - name: type
+          in: query
+          deprecated: true
+          description: >-
+            Deprecated alias for `product_type`, kept for shipped app builds. Ignored when `product_type` is also supplied.
+          required: false
+          schema:
+            type: string
+            example: spot,perp
+        - name: asset_class
+          in: query
+          description: >-
+            Comma-separated list of asset classes to include (`crypto`, `stock`), case-insensitive. Defaults to `crypto` when omitted, so tokenized stocks are returned only when requested explicitly. Orthogonal to `product_type`: a tokenized stock is a spot or perp listing whose asset class is `stock`.
+          required: false
+          schema:
+            type: string
+            default: crypto
+            example: crypto,stock
+        - name: address
+          in: query
+          description: >-
+            Only the listings held at this token address, on whichever chain they sit. Matches case-insensitively, so a checksummed and a lowercased EVM address find the same listing.
+          required: false
+          schema:
+            type: string
+            example: "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
+      responses:
+        "200":
+          description: Assets retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListAssetsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /assets/{chain}/{address}:
+    get:
+      operationId: getAsset
+      tags:
+        - Assets
+      summary: Get one asset by chain and address
+      description: >-
+        Returns the single catalog listing held at `address` on `chain`, in the same shape a `GET /assets` row takes. Both parameters match case-insensitively, so a checksummed and a lowercased EVM address resolve to the same listing.
+
+
+        Unlike `GET /assets`, this lookup applies no status, venue, or asset class filter, so a listing the browse list hides for its `status` (for example `transfer_only`) is still returned here and a client holding the asset can read its real state. Deactivated listings are not returned.
+      security: []
+      parameters:
+        - name: chain
+          in: path
+          required: true
+          description: Blockchain network the listing sits on, or `hypercore-perp` for a perp.
+          schema:
+            type: string
+            example: base
+        - name: address
+          in: path
+          required: true
+          description: Token contract/mint address, or the symbol for a perp listing.
+          schema:
+            type: string
+            example: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      responses:
+        "200":
+          description: Asset retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetItem"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # ==================== BALANCE ENDPOINTS ====================
+  /balances/unified:
+    get:
+      operationId: listBalances
+      tags:
+        - Balances
+      summary: List balances
+      description: Returns unified balances across CeFi and DeFi for the authenticated user
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      responses:
+        "200":
+          description: Balances retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBalancesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /balances:
+    get:
+      operationId: getBalances
+      summary: Get user balances
+      description: Returns unified balances across CeFi and DeFi for the authenticated user
+      tags:
+        - Balances
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      responses:
+        "200":
+          description: Balances retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListBalancesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /positions:
+    get:
+      operationId: listPositions
+      tags:
+        - Positions
+      summary: List open positions
+      description: >
+        Returns a read-only list of the authenticated user's open positions. Data is fetched on demand from the venue; nothing is persisted.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      responses:
+        "200":
+          description: Positions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListPositionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /portfolio:
+    get:
+      operationId: getPortfolio
+      tags:
+        - Balances
+      summary: Get the authenticated user's portfolio
+      description: >
+        Unified portfolio across CeFi and DeFi venues: valued balances, open positions, and PnL in a single call.
+
+
+        `total_usd` is total account equity: `balances_usd` plus the margin committed to open positions, counted once. A Hyperliquid unified account's spot USDC balance already holds that margin, so none is added for it. Unrealized PnL is deliberately not added, because balances and margin are already marked to market. `balances_usd` on its own is the value of balances, which excludes collateral committed to perps except on a unified account.
+
+
+        A balance with no live price returns `price`, `value` and `change_24h_pct` as null and is excluded from every total. A CeFi holding that TrueX or the asset catalog cannot identify has no row, counts in no total and is named in `incomplete.unrecognized_cefi_assets`.
+
+
+        Funds allocated to CeFi trading count once, through the CeFi row: a DeFi row's `allocated` quantity is left out of its `value` and of DeFi's totals. Funds allocated that TrueX has not credited yet appear as the CeFi row's `in_transit` and count in the totals at that row's price. A release needs no such add-back, since TrueX completes its debit only once the allocation is released.
+
+
+        `cost_basis` is present only for non-quote assets acquired on platform. Quote and stable assets omit it, and so does any quantity received by deposit or bridge.
+
+
+        A read that fails is flagged in `incomplete` rather than failing the request. When DeFi, TrueX or pricing cannot be read, the venues that were read are still returned, `incomplete.defi_unavailable` or `incomplete.cefi_unavailable` is set, and every aggregate (`total_usd`, `account_total_usd`, `balances_usd`, `cash_usd`, `change_24h_usd`, `change_24h_pct`, `unrealized_pnl_usd`, `realized_pnl_usd`) is null: each depends on both venues, so a partial sum would be wrong rather than merely incomplete.
+
+
+        `total_usd` covers the main wallet only. The Strategies wallet is a separate account, reported in `strategies` and added into `account_total_usd`; it is read only when no `venue` filter is set. A failed Strategies read returns `strategies` and `account_total_usd` as null and sets `incomplete.strategies_unavailable`, and the request still succeeds.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: venue
+          in: query
+          required: false
+          description: >
+            Restrict the portfolio to one venue (`defi`, `cefi`). Defaults to all venues when omitted.
+          schema:
+            $ref: "#/components/schemas/Venue"
+      responses:
+        "200":
+          description: The user's portfolio
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PortfolioResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  # ==================== TRANSACTION ENDPOINTS ====================
+  /transactions:
+    get:
+      operationId: listTransactions
+      summary: List user transactions
+      description: >
+        Returns the caller's orders, transfers, ramps, and received transfers as one paginated feed, newest first. Each row pairs a type-agnostic envelope with the full typed object named by `type`, so the per-type endpoints do not need merging client-side.
+
+
+        A received transfer is a transfer into the caller's wallet that none of their own platform activity explains, such as a transfer from an external wallet. It appears a minute or more after its block. Open Hyperliquid orders are served live by `GET /orders` and appear here once terminal.
+
+
+        Paginate with the previous page's `next_cursor`.
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+        - name: type
+          in: query
+          description: Comma-separated types to include. Defaults to all.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/TransactionType"
+            example: ["order", "transfer"]
+        - name: status
+          in: query
+          description: Comma-separated statuses to include. Defaults to all.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/TransactionStatus"
+            example: ["completed", "canceled"]
+        - $ref: "#/components/parameters/AssetSymbolFilter"
+        - $ref: "#/components/parameters/AssetTypeFilter"
+        - $ref: "#/components/parameters/OrderTypeFilter"
+        - $ref: "#/components/parameters/AssetClassFilter"
+        - $ref: "#/components/parameters/TransactionIDFilter"
+        - $ref: "#/components/parameters/TxHashFilter"
+        - $ref: "#/components/parameters/CreatedFromFilter"
+        - $ref: "#/components/parameters/CreatedToFilter"
+        - name: search
+          in: query
+          description: >
+            Case-insensitive text found in a transaction's id, asset symbol or tx hash, or in a transfer's destination or a received transfer's sender address. At least 3 and at most 128 characters.
+          required: false
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 128
+            example: "0x9f3"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of transactions to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListTransactionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /organizations/{organization_id}/transactions:
+    get:
+      operationId: listOrganizationTransactions
+      summary: List organization transactions
+      description: >
+        Orders, transfers and received transfers of every user the organization serves, newest first, each row naming its user. Ramps are not included.
+
+
+        Requires an organization token for this organization, or an admin member of it. `TM-On-Behalf-Of` is rejected.
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+        - name: user_id
+          in: query
+          description: Comma-separated user ids. Defaults to every user served.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            maxItems: 100
+            items:
+              type: string
+              format: uuid
+        - name: type
+          in: query
+          description: >
+            Comma-separated types to include: `order`, `transfer`, `received_transfer`. Defaults to all three; `ramp` is rejected.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/TransactionType"
+            example: ["order", "transfer"]
+        - name: status
+          in: query
+          description: Comma-separated statuses to include. Defaults to all.
+          required: false
+          style: form
+          explode: false
+          schema:
+            type: array
+            items:
+              $ref: "#/components/schemas/TransactionStatus"
+            example: ["completed", "failed"]
+        - name: external_ref_id
+          in: query
+          description: Your reference for one served user, as given when the user was created.
+          required: false
+          schema:
+            type: string
+            pattern: "^[A-Za-z0-9_-]{1,64}$"
+            example: "customer-4821"
+        - $ref: "#/components/parameters/AssetSymbolFilter"
+        - $ref: "#/components/parameters/AssetTypeFilter"
+        - $ref: "#/components/parameters/OrderTypeFilter"
+        - $ref: "#/components/parameters/AssetClassFilter"
+        - $ref: "#/components/parameters/TransactionIDFilter"
+        - $ref: "#/components/parameters/TxHashFilter"
+        - $ref: "#/components/parameters/CreatedFromFilter"
+        - $ref: "#/components/parameters/CreatedToFilter"
+        - name: cursor
+          in: query
+          description: Opaque pagination cursor from the previous page's `next_cursor`
+          required: false
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Maximum number of transactions to return
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 50
+      responses:
+        "200":
+          description: Transactions retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListOrganizationTransactionsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /organizations/{organization_id}/transactions/stats:
+    get:
+      operationId: getOrganizationTransactionStats
+      summary: Get organization trading stats
+      description: >
+        Trading totals for every user the organization serves over a window that ends with the current UTC hour (`24h`) or day (`7d`, `30d`). Volume and fees count every order with a fill, including partial fills of canceled orders, in the USD stablecoin it was quoted in.
+
+
+        Requires an organization token for this organization, or an admin member of it. `TM-On-Behalf-Of` is rejected.
+      tags:
+        - Transactions
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationID"
+        - name: window
+          in: query
+          required: true
+          schema:
+            $ref: "#/components/schemas/StatsWindow"
+      responses:
+        "200":
+          description: Stats retrieved successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationTransactionStats"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        An access token from `POST /v1/auth/api-key/token`. An organization token lasts one hour and has no refresh token; a personal token can be refreshed.
+  parameters:
+    OrganizationID:
+      name: organization_id
+      in: path
+      required: true
+      description: >
+        Your organization's id: the `tm.organization_id` claim of an organization token, also shown on the dashboard Overview.
+      schema:
+        type: string
+        format: uuid
+    AssetSymbolFilter:
+      name: asset_symbol
+      in: query
+      description: Comma-separated asset symbols, matched exactly.
+      required: false
+      style: form
+      explode: false
+      schema:
+        type: array
+        maxItems: 50
+        items:
+          type: string
+          maxLength: 128
+        example: ["BTC", "ETH"]
+    AssetTypeFilter:
+      name: asset_type
+      in: query
+      description: Comma-separated asset types. Returns orders only.
+      required: false
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          $ref: "#/components/schemas/ProductType"
+        example: ["perp"]
+    OrderTypeFilter:
+      name: order_type
+      in: query
+      description: >
+        Comma-separated order types. A take-profit or stop-loss order matches only its trigger type. Returns orders only.
+      required: false
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          $ref: "#/components/schemas/TransactionOrderType"
+        example: ["limit", "take_profit"]
+    AssetClassFilter:
+      name: asset_class
+      in: query
+      description: Comma-separated asset classes. Returns orders only.
+      required: false
+      style: form
+      explode: false
+      schema:
+        type: array
+        items:
+          $ref: "#/components/schemas/AssetClass"
+        example: ["stock"]
+    TransactionIDFilter:
+      name: id
+      in: query
+      description: One transaction's id.
+      required: false
+      schema:
+        type: string
+        format: uuid
+    TxHashFilter:
+      name: tx_hash
+      in: query
+      description: One transaction hash, matched regardless of case.
+      required: false
+      schema:
+        type: string
+        maxLength: 128
+    CreatedFromFilter:
+      name: from
+      in: query
+      description: Created at or after this instant.
+      required: false
+      schema:
+        type: string
+        format: date-time
+    CreatedToFilter:
+      name: to
+      in: query
+      description: Created before this instant. Must be after `from`.
+      required: false
+      schema:
+        type: string
+        format: date-time
+    OnBehalfOf:
+      name: TM-On-Behalf-Of
+      in: header
+      required: false
+      description: >
+        Act as one of your organization's users. The value is the `user_id` returned when the user was created; the request then reads and writes that user's account. Requires an organization token and a user your organization created: `400` for a personal token, a repeated header or a non-UUID, `403` for a user outside your organization. Not accepted on organization-scoped routes.
+      schema:
+        type: string
+        format: uuid
+      example: 3f6d2c0e-8a41-4c2b-9f1e-2b7d5c0a9e11
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: >-
+        Forbidden. On order creation this also covers an asset that is not available to trade from the country the request came from.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Conflict
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    UnprocessableEntity:
+      description: Request is well-formed but cannot be processed (e.g. leverage missing or out of range for a perp order)
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ServiceUnavailable:
+      description: Service unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    OrderSide:
+      type: string
+      enum: [buy, sell]
+      example: "buy"
+      description: >
+        The side of the order.
+
+        * **buy** — Purchase the base asset using the quote asset.
+
+        * **sell** — Sell the base asset in exchange for the quote asset.
+    OrderType:
+      type: string
+      enum: [market, limit]
+      example: "market"
+      description: >
+        The type of order to place — how the order executes.
+
+        * **market** — Execute immediately at the best available price. Buy orders require `qty_unit: quote`. Price must not be specified.
+
+        * **limit** — Place an order at a specific price. Requires `price` and `qty_unit: base`. `chain` is optional: omit it for a CeFi limit order, or supply a DeFi chain (e.g. `hypercore-spot`) to rest the order on-chain.
+
+        With a `trigger`, the type is how the fired order executes and must be `market`.
+    Trigger:
+      type: object
+      description: >
+        Makes the order a TP/SL trigger: a reduce-only market close that rests off-book and fires when the mark price crosses `price`. Perp-only (`hypercore-perp`). A `take_profit` must rest on the profitable side of the position and a `stop_loss` on the losing side, or the order is rejected. The order `type` must be `market`, and `price`/`leverage` must not be specified; `reduce_only` is implied.
+      required:
+        - type
+        - price
+      properties:
+        type:
+          type: string
+          enum: [take_profit, stop_loss]
+          description: Trigger direction relative to the position.
+        price:
+          type: string
+          description: Trigger price per unit of base asset as a decimal string.
+          example: "70000.00"
+    OrderStatus:
+      type: string
+      enum: [initialized, pending, cancel_pending, complete, canceled, active, failed]
+      example: "complete"
+      description: >
+        The current status of the order.
+
+        * **initialized** — Order has been created but not yet submitted. For DeFi orders, the client must sign the returned payloads and call the execute endpoint. For CeFi buy orders with insufficient balance, a funding bridge is prepared first.
+
+        * **pending** — Order has been submitted but is not yet confirmed by the CeFi exchange or on-chain.
+
+        * **active** — Order was accepted by the CeFi exchange and is open for trading. Applies to limit orders that are working in the order book.
+
+        * **cancel_pending** — A cancellation request has been sent to the CeFi exchange and is awaiting confirmation.
+
+        * **complete** — Order has been fully executed. For CeFi orders this means the CeFi exchange reported a fill; for DeFi orders the on-chain swap was confirmed.
+
+        * **canceled** — Order was successfully canceled via a cancel request or by exchange/market conditions.
+
+        * **failed** — Order was rejected by the CeFi exchange or DeFi execution failed (e.g. on-chain transaction reverted, balance check failed).
+    SigningMethod:
+      type: string
+      enum: [web_authn, api_key]
+      example: "api_key"
+      description: >
+        The authentication method used to sign transaction payloads.
+
+        * **web_authn** — Signed using a passkey (WebAuthn/FIDO2 credential) via the browser.
+
+        * **api_key** — Signed using an API key. Suitable for programmatic/headless access.
+    Chain:
+      type: string
+      enum: [solana, base, robinhood, hypercore-spot, hypercore-perp]
+      example: "solana"
+      description: >
+        The blockchain network for DeFi orders. Omit for CeFi orders.
+
+        * **solana** — Execute the swap on the Solana blockchain.
+
+        * **base** — Execute the swap on the Base (Ethereum L2) blockchain.
+
+        * **robinhood** — Execute the swap on Robinhood Chain (Arbitrum-based Ethereum L2).
+
+        * **hypercore-spot** — Execute the order on the Hyperliquid spot order book.
+
+        * **hypercore-perp** — Execute the order on the Hyperliquid perpetuals order book.
+    Venue:
+      type: string
+      enum: [defi, cefi]
+      example: "defi"
+      description: >
+        The trading venue to filter by.
+
+        * **defi** — Decentralized exchange (on-chain swaps).
+
+        * **cefi** — Centralized exchange (off-chain order book).
+    ProductType:
+      type: string
+      enum: [spot, perp]
+      example: "spot"
+      description: Whether the asset is spot or a perpetual (perp).
+    AssetClass:
+      type: string
+      enum: [crypto, stock]
+      example: "crypto"
+      description: >
+        The underlying instrument, orthogonal to product type. A `stock` is a tokenized equity, which is an ordinary spot or perp listing and quotes and executes as one. Absent on servers predating the field, which list crypto only.
+    Issuer:
+      type: string
+      enum: [coinbase, robinhood]
+      example: "coinbase"
+      description: >
+        The company that issues a tokenized stock; absent for any other listing.
+    QuoteRequest:
+      type: object
+      description: >
+        Request to compute a market quote. Provide `asset_id` for a listing, or `base_asset` and `quote_asset` for a CeFi pair.
+      required:
+        - qty
+        - qty_unit
+        - side
+      properties:
+        base_asset:
+          type: string
+          description: Base asset identifier (e.g. `BTC`, `ETH`, `SOL`)
+          example: "BTC"
+        quote_asset:
+          type: string
+          description: Quote asset identifier (e.g. `USD`, `USDC`)
+          example: "USD"
+        asset_id:
+          type: string
+          description: A listing's id from `GET /assets`. Requires a bearer token.
+        leverage:
+          type: integer
+          minimum: 1
+          description: Leverage for a perp listing's `asset_id`; required there and accepted nowhere else.
+        qty:
+          type: string
+          description: Quantity as a positive decimal string
+          example: "0.5"
+        qty_unit:
+          type: string
+          enum: [base, quote]
+          description: >
+            Unit of the quantity.
+
+            * **base** — Quantity is denominated in the base asset (e.g. 0.5 BTC).
+
+            * **quote** — Quantity is denominated in the quote asset (e.g. 1000 USD).
+          example: "quote"
+        side:
+          $ref: "#/components/schemas/OrderSide"
+    QuoteResponse:
+      type: object
+      description: Quote computation result with the expected quantity, execution price, notional and fee
+      properties:
+        qty:
+          type: string
+          description: Expected base asset quantity as a decimal string, for buys and sells and for both `qty_unit` values. With `qty_unit=quote` it is rounded down to the base increment. For a DeFi perp open, the position size.
+          example: "0.00156"
+        price:
+          type: string
+          description: Effective execution price per unit of base asset as a decimal string
+          example: "64000"
+        notional:
+          type: string
+          description: Expected quote asset amount the order executes, before fees, as a decimal string. With `qty_unit=quote` it can be slightly less than the requested amount after base increment rounding.
+          example: "99.84"
+        fee:
+          type: string
+          description: The whole fee the order is quoted to pay, every venue fee included, in quote asset units as a decimal string. Added to the cost on a buy and deducted from the proceeds on a sell.
+          example: "0.039936"
+    CreateOrderRequest:
+      type: object
+      description: |
+        Request to create a new order.
+
+        **Identifying the asset** — provide exactly one of `asset_id` or `base_asset`
+        (supplying both or neither is a `400`). `asset_id` is the id from
+        `GET /assets` and is preferred; `base_asset` is the legacy identifier.
+
+        **Choosing the venue** — `venue` defaults to `smart`. For an asset that trades on
+        both venues, `cefi` or `defi` sends the order to that venue's listing whichever
+        listing `asset_id` names, and `smart` lets the conductor choose; the response says
+        which venue it used.
+
+        **Limit orders** (`type: limit`):
+        - `price` is required and must be a positive decimal string
+        - `qty_unit` must be `base`
+        - `chain` is optional (omit for CeFi; include a DeFi chain such as `hypercore-spot` to rest the order on-chain)
+
+        **Market orders** (`type: market`):
+        - `price` is not accepted
+        - Buy orders require `qty_unit: quote`
+        - Sell orders accept `qty_unit: base` or `qty_unit: quote`
+        - `chain` is optional (omit for CeFi, include for DeFi)
+
+        **Perp orders** (a perp `asset_id`, or `chain: hypercore-perp` with `base_asset`):
+        - `leverage` is required to open a position (buy = long, sell = short) and must be between 1 and 50; it must be omitted for non-perp assets
+        - `reduce_only: true` marks the order as a close of the opposite position; `leverage` is then ignored
+        - `qty` is the isolated margin to commit; position notional = `qty` × `leverage`
+        - `qty_unit` may be `quote` (margin) or `base` (position size) on either side
+
+        **Trigger orders** (a `trigger` object, perp-only):
+        - the order rests off-book and fires as a reduce-only market close when the mark price crosses `trigger.price`
+        - a take-profit must rest on the profitable side of the position and a stop-loss on the losing side, or the quote is rejected
+        - `type` must be `market`; `price` and `leverage` must not be sent; `reduce_only` is implied
+      required:
+        - qty
+        - qty_unit
+        - type
+        - side
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: >
+            Asset id from `GET /assets`. Preferred way to identify the asset; chain and venue are derived from it. Provide exactly one of `asset_id` or `base_asset`.
+          example: "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d"
+        base_asset:
+          type: string
+          description: >
+            Legacy asset identifier: asset symbol for CeFi (e.g. `BTC`); token contract address on `chain` for DeFi. Provide exactly one of `asset_id` or `base_asset`.
+          example: "BTC"
+        qty:
+          type: string
+          description: Quantity as a positive decimal string
+          example: "100"
+        price:
+          type: string
+          description: >
+            Limit price per unit of base asset as a decimal string. Required for limit orders; must not be sent for market orders.
+          example: "67500.00"
+        trigger:
+          $ref: "#/components/schemas/Trigger"
+        qty_unit:
+          type: string
+          enum: [base, quote]
+          description: >
+            Unit of the quantity.
+
+            * **base** — Quantity is denominated in the base asset. Required for limit orders. Supported for market sell orders.
+
+            * **quote** — Quantity is denominated in the quote asset. Required for market buy orders. For DeFi sell orders, `base` must be used instead.
+          example: "quote"
+        type:
+          $ref: "#/components/schemas/OrderType"
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        chain:
+          allOf:
+            - $ref: "#/components/schemas/Chain"
+          description: >
+            Blockchain network for DeFi orders. Omit for CeFi orders.
+        leverage:
+          type: integer
+          format: uint16
+          minimum: 1
+          maximum: 50
+          description: >
+            Isolated-margin leverage for a perp order. Required when the resolved asset is a perp (a perp `asset_id`, or `chain: hypercore-perp`) and the order opens a position (not reduce-only); must not be sent for non-perp assets.
+          example: 10
+        reduce_only:
+          type: boolean
+          description: >
+            Marks a perp order as a reduce-only close — it only reduces an existing position and never opens one. Only valid for perp assets.
+          example: false
+        venue:
+          type: string
+          enum: [smart, cefi, defi]
+          default: smart
+          description: >
+            Venue the order should trade on.
+
+            * **smart** — The conductor chooses. For an asset that trades on both venues
+              (a CeFi listing that settles to DeFi and the DeFi listing it settles on), a
+              market order goes to the better price after fees and a limit order to CeFi;
+              when only one venue is open to the user, the order goes there. Otherwise the
+              order goes to the listing `asset_id` names.
+            * **cefi** — The asset's CeFi listing, whichever listing `asset_id` names. `400`
+              when the asset has no CeFi listing.
+            * **defi** — The asset's DeFi listing, whichever listing `asset_id` names. `400`
+              when the asset has no DeFi listing.
+          example: smart
+    UnsignedPayload:
+      type: object
+      description: >
+        An unsigned payload the client must sign before executing. Sign each one with the key that controls the wallet: a Gateway user's signer key, or a Trading API account's own API key or passkey. Submit the stamps to the execute endpoint in the same order.
+      required:
+        - digest
+        - payload
+      properties:
+        digest:
+          type: string
+          description: >
+            Lowercase hex SHA-256 of the `payload` bytes. A signing API that takes a pre-hashed input signs the hex-decoded digest; a library that hashes its input takes `payload` instead. Passing the hex digest to a library that hashes signs the wrong bytes.
+        payload:
+          type: string
+          description: >
+            The exact text to sign: a Turnkey activity as JSON, including its trailing newline. Sign its UTF-8 bytes as-is with ECDSA P-256 and SHA-256; never decode, reformat or re-serialize it.
+    QuoteDetails:
+      type: object
+      description: Detailed quote information returned with DeFi order creation, showing expected swap output and fees
+      properties:
+        base_asset:
+          type: string
+          description: Base asset identifier (e.g. `SOL`, `ETH`)
+        quote_asset:
+          type: string
+          description: Quote asset identifier (e.g. `USDC`)
+        qty:
+          type: string
+          description: Input quantity as a decimal string — the amount being swapped from
+        qty_out:
+          type: string
+          description: Expected output quantity as a decimal string — the amount the user will receive after fees
+        fee:
+          type: string
+          description: The whole fee the order is quoted to pay, every venue fee included, as a decimal string
+        fee_asset:
+          type: string
+          description: Asset in which the fee is denominated (e.g. `USDC`)
+        issues:
+          type: array
+          items:
+            type: string
+          description: >
+            Warnings about the quote (e.g. high price impact, low liquidity, `Insufficient balance`). Empty when there are no issues. An `Insufficient balance` entry means the account cannot fund the trade, in which case the response is quote-only (empty `order_id`, no `payloads`).
+    CreateOrderResponse:
+      type: object
+      description: >
+        Response from creating an order. For DeFi orders (and CeFi buy orders requiring a funding bridge), the response includes unsigned payloads that must be signed by the client and submitted via the execute endpoint. For CeFi sell orders and sufficiently funded CeFi buy orders, the order is submitted immediately and no payloads are returned. When a DeFi order cannot be funded, the response is quote-only: it carries the `quote` (with an `Insufficient balance` entry in `quote.issues`), an empty `order_id`, and no `payloads`, and no order is created.
+      properties:
+        order_id:
+          type: string
+          description: Unique order identifier. Empty when no order was created, e.g. a DeFi quote the account cannot fund.
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        venue:
+          allOf:
+            - $ref: "#/components/schemas/Venue"
+          description: >
+            Venue the order went to. For a user released to smart order routing it can differ from the venue of the listing the order named.
+        route_reason:
+          type: string
+          enum: [limit_order, best_price, cefi_no_market, cefi_unavailable, defi_unavailable, no_market, only_venue]
+          description: >
+            Why the smart order router chose `venue`; absent when the order was not routed. `limit_order` (limit orders rest on CeFi), `best_price` (the better price after fees), `cefi_no_market` / `cefi_unavailable` (CeFi could not price the order, so DeFi), `defi_unavailable` (DeFi could not price it, so CeFi), `no_market` (neither venue could, so the venue the order named), `only_venue` (the only venue of the pair open to the user).
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+          description: >
+            Unsigned transaction payloads that the client must sign and return via the execute endpoint. Present for DeFi orders and CeFi buy orders that require a funding bridge. Empty or absent when the order is submitted immediately (e.g. CeFi sell orders).
+        quote:
+          allOf:
+            - $ref: "#/components/schemas/QuoteDetails"
+          description: >
+            DeFi orders only. For CeFi price previews, use `POST /quotes`. When `issues` reports an insufficient-balance problem, the response is quote-only: `order_id` is empty and there are no `payloads`.
+        web_authn_payload:
+          type: string
+          description: WebAuthn payload (deprecated, use payloads instead)
+          deprecated: true
+    ExecuteOrderRequest:
+      type: object
+      description: >
+        Request to execute an order that is in `initialized` status. The client must sign each payload returned by the create endpoint and submit the signatures in the same order.
+      required:
+        - signatures
+        - auth_type
+      properties:
+        signatures:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: >
+            One stamp per payload, in the same order as the payloads returned by the create endpoint. With `auth_type: api_key`, an entry is the base64url encoding, without padding, of the JSON `{"publicKey": "<compressed P-256 public key, hex>", "signature": "<DER signature, hex>", "scheme": "SIGNATURE_SCHEME_TK_API_P256"}`, signed as `UnsignedPayload` describes. With `auth_type: web_authn`, an entry is the browser's WebAuthn stamp.
+        auth_type:
+          $ref: "#/components/schemas/SigningMethod"
+    ExecuteOrderResponse:
+      type: object
+      description: >
+        Response from executing an order. For DeFi orders, a successful execution transitions the order to `complete` (an immediate fill) or `active` (a limit order resting on-chain). For CeFi orders, the order moves to `pending` while it is processed by the CeFi exchange.
+      properties:
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+    ModifyTriggersRequest:
+      type: object
+      required:
+        - orders
+      properties:
+        orders:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+              - order_id
+              - trigger_price
+            properties:
+              order_id:
+                type: string
+                format: uuid
+              trigger_price:
+                type: string
+                description: New trigger price, a positive decimal.
+                example: "2300"
+    ModifyTriggersResponse:
+      type: object
+      properties:
+        payloads:
+          type: array
+          description: The single payload to sign for the whole batch.
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+    ExecuteModifyTriggersResponse:
+      type: object
+      properties:
+        orders:
+          type: array
+          description: Each order's outcome, in the prepared order.
+          items:
+            type: object
+            properties:
+              order_id:
+                type: string
+                format: uuid
+              trigger_price:
+                type: string
+                description: The trigger price the order now rests at; empty when refused.
+              error:
+                type: string
+                description: The venue's reason for refusing this order, when it did.
+    CancelOrderResponse:
+      type: object
+      description: >
+        Response from the cancel endpoint. A resting DeFi order returns unsigned payloads the client must sign and submit to the cancel-execute endpoint. A CeFi order is canceled immediately and returns 202 with no payloads.
+      properties:
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+          description: >
+            Unsigned cancel payloads the client signs and returns via the cancel-execute endpoint. Present for resting DeFi orders, absent for CeFi orders.
+    CancelAllOrdersRequest:
+      type: object
+      description: Request to cancel all open orders on a venue.
+      required:
+        - venue
+      properties:
+        venue:
+          $ref: "#/components/schemas/Venue"
+    CancelAllOrdersResponse:
+      type: object
+      description: Result of a cancel-all request.
+      properties:
+        canceled_count:
+          type: integer
+          description: Number of open orders canceled by this request.
+          example: 3
+    ModifyOrderRequest:
+      type: object
+      description: >
+        Request to modify an active limit order. At least one of `price` or `qty` must be supplied; any field that is omitted is left unchanged.
+      properties:
+        price:
+          type: string
+          description: New limit price per unit of base asset as a positive decimal string.
+          example: "67500.00"
+        qty:
+          type: string
+          description: New quantity as a positive decimal string.
+          example: "0.5"
+    GetOrderStatusResponse:
+      type: object
+      description: Order status response
+      properties:
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+    OrderDetail:
+      type: object
+      description: >
+        Order with execution data, returned by the list-orders and get-order endpoints for orders of any status. Includes fill information from the CeFi exchange for CeFi orders.
+      properties:
+        order_id:
+          type: string
+          description: Unique order identifier
+        asset_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Asset id the order was placed against. May be null for orders sourced directly from the venue.
+        economic_asset_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Economic asset the order's listing lists, shared by its listings on every venue and chain. Null when the order recorded none.
+        asset_symbol:
+          type: string
+          nullable: true
+          description: Asset symbol the order was placed against. May be null for orders sourced directly from the venue.
+        base_asset:
+          type: string
+          description: Base asset symbol (e.g. `BTC`, `ETH`, `SOL`)
+        quote_asset:
+          type: string
+          description: Quote asset symbol (the CeFi listing's instrument quote, e.g. `PYUSD` or `USDC`; `USDC` for DeFi)
+        type:
+          $ref: "#/components/schemas/OrderType"
+        side:
+          $ref: "#/components/schemas/OrderSide"
+        price:
+          type: string
+          nullable: true
+          description: >
+            For limit orders, the limit price submitted. For market orders, the reference price at order creation. Null when no price was recorded.
+        qty:
+          type: string
+          description: Original order quantity in the denomination specified by `qty_unit` at creation
+        qty_unit:
+          type: string
+          enum: [base, quote]
+          description: Denomination of `qty` at creation
+        executed_qty:
+          type: string
+          description: Quantity of the base asset that has been filled so far
+        leaves_qty:
+          type: string
+          description: Remaining base asset quantity yet to be filled. Zero when the order is complete.
+        executed_vwap:
+          type: string
+          description: Volume-weighted average price across all fills for this order
+        fee:
+          type: string
+          description: >
+            Total fee charged for this order in the quote asset, `0` until part of it fills. For CeFi orders this is the cumulative `trade_fee` across all fills; for DeFi orders it is the order's fee once any of it has filled. The fee an order is expected to pay before it fills is the quote's `fee`.
+        tx_hash:
+          type: string
+          description: On-chain transaction hash for DeFi orders. Omitted for CeFi orders.
+        explorer_url:
+          type: string
+          description: >
+            Public block-explorer page for the order. Hyperliquid orders link to the wallet's address page on the Hyperliquid explorer, since only the venue order id is recorded. Set on `GET /orders` and the transaction feed, like `asset_type`; omitted for CeFi orders and until the venue has acknowledged the order.
+        failure_reason:
+          type: string
+          description: >
+            Human-readable reason the order failed, such as insufficient balance. Present only on failed orders.
+        venue:
+          $ref: "#/components/schemas/Venue"
+        chain:
+          allOf:
+            - $ref: "#/components/schemas/Chain"
+          description: Chain the DeFi order executed on. Omitted for CeFi orders.
+        status:
+          $ref: "#/components/schemas/OrderStatus"
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the order was created (RFC 3339)
+        asset_type:
+          type: string
+          enum: [spot, perp]
+          description: >
+            Product type of the traded asset. `perp` for Hyperliquid perpetuals, `spot` otherwise. Lets clients tell perp orders apart from spot ones sharing the same symbol.
+        trigger:
+          allOf:
+            - $ref: "#/components/schemas/Trigger"
+          description: >
+            Set on a TP/SL trigger order, the same shape it was created with. Such an order is a `market` close, so `price` is null while it rests.
+        placed_by:
+          type: string
+          enum: [user, service]
+          description: >
+            Who placed the order: the user, or a platform service acting for them, such as a strategy trading from their Strategies wallet.
+        strategy_managed:
+          type: boolean
+          description: >
+            True on an order a platform service placed for the user (`placed_by` is `service`). It is read-only here: `POST /orders/{id}/cancel` and modify return 422. A live open order conductor has no record of carries its DeFi order id as `order_id`. Omitted otherwise.
+    Pagination:
+      type: object
+      description: >
+        Cursor-based pagination metadata. The cursor is opaque and must be passed back verbatim; never parse or construct one.
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page, null when the feed is exhausted
+        limit:
+          type: integer
+          description: Number of items per page
+    GetOrdersResponse:
+      type: object
+      description: Paginated list of orders with execution data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderDetail"
+          description: List of orders
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    ListBalancesResponse:
+      type: object
+      description: Unified balances across CeFi and DeFi venues
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/BalanceItem"
+          description: List of asset balances
+    BalanceItem:
+      type: object
+      description: A single asset balance on a specific venue
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Unique asset identifier; pass as `asset_id` when creating an order. Empty when the asset is not in the catalog.
+        economic_asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Economic asset this listing belongs to, shared across venues and chains. Omitted when the asset is not in the catalog.
+        venue:
+          $ref: "#/components/schemas/Venue"
+        symbol:
+          type: string
+          description: Asset ticker symbol (e.g. BTC, USDC)
+        name:
+          type: string
+          description: Human-readable asset name
+        chain:
+          type: string
+          nullable: true
+          description: Blockchain network ("solana", "base"), or null for exchange-held assets
+        address:
+          type: string
+          nullable: true
+          description: Token contract/mint address, or null for exchange-held assets
+        decimals:
+          type: integer
+          description: Display precision (e.g. 8 for BTC, 6 for USDC)
+        total:
+          type: string
+          description: Gross balance including held amounts (decimal string)
+        available:
+          type: string
+          description: Usable balance after holds (decimal string)
+        held:
+          type: string
+          description: Amount locked in orders or transfers (decimal string)
+        allocated:
+          type: string
+          description: >-
+            Quantity of a DeFi row committed to CeFi trading (decimal string). `total` and `available` are already net of it, and the CeFi row for the same asset reports it. Zero on CeFi rows.
+        stable:
+          type: boolean
+          description: Whether this is a stablecoin
+        tradeable:
+          type: boolean
+          description: Whether this asset is active for trading
+    ListPositionsResponse:
+      type: object
+      description: A user's open positions
+      required:
+        - positions
+      properties:
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+          description: Open positions
+    Position:
+      type: object
+      description: A single open position
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Unique asset identifier for the perp; pass as `asset_id` when creating an order. Empty when the coin is not listed.
+        venue:
+          $ref: "#/components/schemas/Venue"
+        symbol:
+          type: string
+          description: Asset ticker symbol (e.g. BTC)
+        side:
+          type: string
+          enum: [long, short]
+          description: Position direction
+        size:
+          type: string
+          description: Absolute position size in the base asset (decimal string)
+        entry_price:
+          type: string
+          description: Average entry price (decimal string)
+        mark_price:
+          type: string
+          description: Current mark price used to value the position (decimal string)
+        liquidation_price:
+          type: string
+          nullable: true
+          description: Estimated liquidation price, or null when none is reported
+        margin_used:
+          type: string
+          description: Margin committed to this position (decimal string)
+        unrealized_pnl:
+          type: string
+          description: >-
+            Signed unrealized PnL at mark (decimal string). Reported but never added into a portfolio total; balances and margin are already marked to market.
+        return_on_equity:
+          type: string
+          description: Unrealized PnL as a fraction of margin used (decimal string)
+        leverage:
+          type: integer
+          description: Configured leverage for the position
+    PortfolioResponse:
+      type: object
+      description: >-
+        The user's portfolio across the venues in scope: valued balances, open positions, and PnL.
+      required:
+        - total_usd
+        - account_total_usd
+        - balances_usd
+        - cash_usd
+        - change_24h_usd
+        - change_24h_pct
+        - unrealized_pnl_usd
+        - realized_pnl_usd
+        - balances
+        - positions
+        - strategies
+      properties:
+        total_usd:
+          type: string
+          nullable: true
+          description: >-
+            Main wallet account equity (decimal string): balances_usd plus the margin committed to open positions, counted once. A Hyperliquid unified account's spot USDC balance already holds that margin, so none is added for it. Unrealized PnL is not added; balances and margin are already marked to market. The Strategies wallet is not included; see account_total_usd. Null when a venue in scope could not be read (incomplete.defi_unavailable or incomplete.cefi_unavailable).
+        account_total_usd:
+          type: string
+          nullable: true
+          description: >-
+            total_usd plus strategies.value_usd (decimal string): both wallets. Null whenever either is unknown: when total_usd is null, when the Strategies read failed, when strategies.perp_data_unavailable is true, or when a venue filter is set.
+        balances_usd:
+          type: string
+          nullable: true
+          description: >-
+            Value of balances (decimal string), excluding unpriced assets. Collateral committed to open perps is excluded, except on a Hyperliquid unified account, whose spot USDC balance holds it. Null when a venue in scope could not be read.
+        cash_usd:
+          type: string
+          nullable: true
+          description: >-
+            Value of stablecoin and quote-asset balances at the venues in scope (decimal string). Null when a venue in scope could not be read.
+        change_24h_usd:
+          type: string
+          nullable: true
+          description: >-
+            Rolling 24h change in balance value (decimal string). Null when a venue in scope could not be read.
+        change_24h_pct:
+          type: string
+          nullable: true
+          description: >-
+            Rolling 24h change as a percent (decimal string). Null when a venue in scope could not be read.
+        unrealized_pnl_usd:
+          type: string
+          nullable: true
+          description: >-
+            Spot unrealized PnL plus position unrealized PnL (decimal string). Spot covers on-platform acquisitions only. Null when a venue in scope could not be read.
+        realized_pnl_usd:
+          type: string
+          nullable: true
+          description: >-
+            Realized PnL from on-platform spot sells (decimal string). Null when a venue in scope could not be read.
+        balances:
+          type: array
+          items:
+            $ref: "#/components/schemas/PortfolioBalance"
+        positions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Position"
+        strategies:
+          type: object
+          allOf:
+            - $ref: "#/components/schemas/PortfolioStrategies"
+          nullable: true
+          description: >-
+            The Strategies wallet. Null when a venue filter is set or when the Strategies read failed, in which case incomplete.strategies_unavailable is true.
+        incomplete:
+          $ref: "#/components/schemas/PortfolioIncomplete"
+    PortfolioStrategies:
+      type: object
+      description: >-
+        The user's Strategies wallet, copied unchanged from the strategy service's accounts read (`wallet.value`, `wallet.cash`, `wallet.free`, `totals.allocated`, `totals.pnl.total`). A user with no Strategies wallet gets zeros, with as_of set to the time of the read.
+      required:
+        - value_usd
+        - cash_usd
+        - free_usd
+        - allocated_usd
+        - pnl_usd
+        - pnl_24h_usd
+        - as_of
+        - perp_data_unavailable
+      properties:
+        value_usd:
+          type: string
+          nullable: true
+          description: >-
+            Value of the whole Strategies wallet (decimal string). Null when perp_data_unavailable is true.
+        cash_usd:
+          type: string
+          description: Stablecoin cash in the Strategies wallet (decimal string)
+        free_usd:
+          type: string
+          nullable: true
+          description: >-
+            Cash not allocated to any strategy (decimal string). Null when perp_data_unavailable is true.
+        allocated_usd:
+          type: string
+          description: Capital allocated across the user's strategies (decimal string)
+        pnl_usd:
+          type: string
+          nullable: true
+          description: >-
+            Total P&L across the user's strategies (decimal string). Null when perp_data_unavailable is true.
+        pnl_24h_usd:
+          type: string
+          nullable: true
+          description: >-
+            P&L across the user's strategies over the last 24 hours (decimal string), measured against each strategy's P&L snapshot from then; money moved in or out is not P&L. Null when perp_data_unavailable is true or a strategy has no snapshot from then.
+        as_of:
+          type: string
+          format: date-time
+          description: When the strategy service took the snapshot these figures come from
+        perp_data_unavailable:
+          type: boolean
+          description: >-
+            True when the perp venue could not be read, so the figures that depend on it are null rather than wrong.
+    PortfolioIncomplete:
+      type: object
+      description: >-
+        What the portfolio could not read or value exactly. Omitted when everything was read. Every field is omitted when it has nothing to report.
+      properties:
+        unavailable_chains:
+          type: array
+          description: >-
+            DeFi chain reads that failed. Their balances are missing from the rows and totals.
+          items:
+            $ref: "#/components/schemas/PortfolioUnavailableChain"
+        unpriced:
+          type: array
+          description: >-
+            Symbols of non-stable holdings, on either venue, with no live price. They are excluded from every total.
+          items:
+            type: string
+        over_allocated:
+          type: array
+          description: >-
+            DeFi listings whose CeFi allocation exceeds the on-chain total. The DeFi row counts none of it.
+          items:
+            $ref: "#/components/schemas/PortfolioAssetRef"
+        stranded:
+          type: array
+          description: >-
+            DeFi listings with an allocation or release whose outcome is unknown and awaits an operator. Its amount is not counted as in transit, so the CeFi side may be off by it.
+          items:
+            $ref: "#/components/schemas/PortfolioAssetRef"
+        unrecognized_cefi_assets:
+          type: array
+          description: >-
+            CeFi holdings TrueX reports that could not be identified: TrueX could not name the asset, or the asset catalog has no metadata for it. Each is the symbol when TrueX named it, otherwise the TrueX asset id. They have no row and are excluded from every total.
+          items:
+            type: string
+        positions_unavailable:
+          type: boolean
+          description: >-
+            True when DeFi could not read the perp positions; positions is then empty.
+        defi_unavailable:
+          type: boolean
+          description: >-
+            True when the DeFi portfolio could not be read. No DeFi rows or positions are returned and every aggregate is null.
+        cefi_unavailable:
+          type: boolean
+          description: >-
+            True when the CeFi balances, their prices or the status of a CeFi credit in flight could not be read. No CeFi rows are returned and every aggregate is null.
+        strategies_unavailable:
+          type: boolean
+          description: True when the Strategies wallet could not be read
+    PortfolioUnavailableChain:
+      type: object
+      required:
+        - chain
+        - owner
+      properties:
+        chain:
+          type: string
+          description: The chain whose read failed
+        owner:
+          type: string
+          description: The wallet the failed read belonged to, as DeFi names it
+    PortfolioAssetRef:
+      type: object
+      required:
+        - asset_id
+        - symbol
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing id
+        symbol:
+          type: string
+          description: Asset ticker symbol
+    PortfolioBalance:
+      type: object
+      description: >-
+        A single asset balance with USD valuation. price, value and change_24h_pct are null when the asset has no live price.
+      required:
+        - symbol
+        - venue
+        - decimals
+        - total
+        - available
+        - held
+        - stable
+        - tradeable
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Unique asset identifier; pass as `asset_id` when creating an order. Absent when the asset is not in the catalog.
+        economic_asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Economic asset this listing belongs to, shared across venues and chains. Absent when the asset is not in the catalog.
+        symbol:
+          type: string
+          description: Asset ticker symbol (e.g. BTC, USDC)
+        name:
+          type: string
+          description: Human-readable asset name
+        venue:
+          $ref: "#/components/schemas/Venue"
+        chain:
+          type: string
+          nullable: true
+          description: Blockchain network, or null for exchange-held assets
+        address:
+          type: string
+          nullable: true
+          description: Token contract/mint address, or null for exchange-held assets
+        decimals:
+          type: integer
+          description: Display precision
+        icon:
+          type: string
+          nullable: true
+          description: Icon image URL
+        status:
+          type: string
+          enum: [active, preview, sell_only, transfer_only, disabled]
+          description: Per-listing trading status
+        stable:
+          type: boolean
+          description: Whether this is a stablecoin
+        tradeable:
+          type: boolean
+          description: Whether this asset is active for trading
+        total:
+          type: string
+          description: Gross balance including held amounts (decimal string)
+        available:
+          type: string
+          description: Usable balance after holds (decimal string)
+        held:
+          type: string
+          description: Amount locked in orders or transfers (decimal string)
+        allocated:
+          type: string
+          description: >-
+            DeFi rows only: the quantity of total committed to CeFi trading (decimal string). The CeFi row holds it, so value and the totals leave it out. Absent when the DeFi service does not report it.
+        in_transit:
+          type: string
+          description: >-
+            CeFi rows only: quantity allocated to CeFi trading that TrueX has not yet credited, read against TrueX's own transfer status (decimal string). It counts in the totals at this row's price but not in value. Absent when nothing is in transit. Between DeFi applying a release and TrueX completing its debit, both sides briefly hold the released amount; conductor cannot observe that window.
+        price:
+          type: string
+          nullable: true
+          description: Current USD price per unit; null when unpriced
+        value:
+          type: string
+          nullable: true
+          description: >-
+            USD value of total, less allocated on a DeFi row; null when unpriced and excluded from totals
+        change_24h_pct:
+          type: string
+          nullable: true
+          description: Rolling 24h price change as a percent (decimal string)
+        cost_basis:
+          $ref: "#/components/schemas/PortfolioCostBasis"
+    PortfolioCostBasis:
+      type: object
+      description: >-
+        On-platform cost basis for one asset symbol, FIFO over buys. Absent for quote and stable assets and when the holding was acquired entirely off platform.
+      required:
+        - avg_entry_price
+        - cost_usd
+        - qty
+        - realized_pnl
+        - unrealized_pnl
+      properties:
+        avg_entry_price:
+          type: string
+          description: FIFO average entry price of the still-held on-platform quantity
+        cost_usd:
+          type: string
+          description: USD cost of the still-held on-platform quantity
+        qty:
+          type: string
+          description: >-
+            Still-held quantity acquired on platform, clamped so it never exceeds the row's total.
+        realized_pnl:
+          type: string
+          description: Realized PnL from sells; sell fees reduce proceeds
+        unrealized_pnl:
+          type: string
+          description: Mark-to-market PnL on the still-held on-platform quantity
+    AssetImage:
+      type: object
+      description: Asset image URLs at various resolutions
+      properties:
+        thumb:
+          type: string
+        small:
+          type: string
+        large:
+          type: string
+    AssetMarketData:
+      type: object
+      description: Supply-side market data
+      properties:
+        circulating_supply:
+          type: integer
+          format: int64
+        total_supply:
+          type: integer
+          format: int64
+        max_supply:
+          type: integer
+          format: int64
+    AssetPerpData:
+      type: object
+      description: >
+        Perp-only market data, present only for perp assets. Values are decimal strings for precision and are null until a market snapshot has populated them.
+      properties:
+        funding_rate:
+          type: string
+          nullable: true
+          description: Current hourly funding rate.
+        open_interest:
+          type: string
+          nullable: true
+          description: Open interest in base units.
+        volume_24h:
+          type: string
+          nullable: true
+          description: 24h notional volume.
+        max_leverage:
+          type: integer
+          nullable: true
+          description: Maximum leverage supported for this perp.
+    AssetSocials:
+      type: object
+      description: Social media links
+      properties:
+        x_username:
+          type: string
+        facebook_username:
+          type: string
+        subreddit_url:
+          type: string
+        official_forum_url:
+          type: string
+    AssetNetwork:
+      type: object
+      description: >
+        A deposit/withdrawal network supported for a CeFi asset, together with any additional networks whose deposits route to the same address. This is the source of truth for the `network` field when creating a CeFi transfer via [`createTransfer`](/api/gateway/create-transfer): that field must match this `network` or one of its `compatible_networks` (case-insensitive).
+      required: [network, compatible_networks]
+      properties:
+        network:
+          type: string
+          description: Canonical network name for this deposit/withdrawal rail (e.g. `bitcoin`).
+          example: "bitcoin"
+        compatible_networks:
+          type: array
+          items:
+            type: string
+          description: >
+            Additional network names whose deposits route to the same address as `network`, including `network` itself. Any of these is an accepted `network` value for a CeFi transfer.
+    AssetItem:
+      type: object
+      description: A single tradeable asset
+      required:
+        - networks
+        - order_types
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique asset identifier; pass as `asset_id` when creating an order.
+        economic_asset_id:
+          type: string
+          format: uuid
+          description: >-
+            Economic asset this listing lists, shared by its listings on every venue and chain. Absent when the listing is not in the asset catalog.
+        chain:
+          type: string
+          nullable: true
+          description: Blockchain network (null for CeFi assets)
+        address:
+          type: string
+          nullable: true
+          description: Token contract address (null for CeFi assets)
+        symbol:
+          type: string
+          description: Asset ticker symbol (e.g. BTC, SOL)
+        name:
+          type: string
+          description: Human-readable asset name
+        decimals:
+          type: integer
+          minimum: 0
+          maximum: 255
+          description: Token decimal precision
+        slug:
+          type: string
+          description: URL-safe asset identifier
+        is_active:
+          type: boolean
+        status:
+          type: string
+          enum:
+            - active
+            - preview
+            - sell_only
+            - transfer_only
+            - disabled
+          description: >
+            Per-listing trading status. `GET /assets` lists `active` and `sell_only` listings, while `GET /assets/{chain}/{address}` returns any status, so clients gate on this field directly.
+        description:
+          type: string
+        website:
+          type: string
+        icon:
+          type: string
+          nullable: true
+          description: Icon image URL
+        tradeable:
+          type: boolean
+          description: Whether this asset can be traded directly
+        stable:
+          type: boolean
+          description: Whether this is a stablecoin
+        venue:
+          $ref: "#/components/schemas/Venue"
+        type:
+          $ref: "#/components/schemas/ProductType"
+        asset_class:
+          $ref: "#/components/schemas/AssetClass"
+        issuer:
+          $ref: "#/components/schemas/Issuer"
+        image:
+          $ref: "#/components/schemas/AssetImage"
+        market_data:
+          $ref: "#/components/schemas/AssetMarketData"
+        perp:
+          type: object
+          allOf:
+            - $ref: "#/components/schemas/AssetPerpData"
+          nullable: true
+          description: Perp-only market data; present only for perp assets.
+        socials:
+          $ref: "#/components/schemas/AssetSocials"
+        networks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetNetwork"
+        settlement:
+          type: string
+          enum: [paxos, defi]
+          description: >
+            Custody rail a CeFi spot listing settles on; absent for any other listing.
+        cefi_instrument:
+          type: string
+          example: NVDAC-USDC
+          description: >
+            TrueX instrument symbol a CeFi spot listing trades on; absent for any other listing and while the instrument is not yet resolved.
+        order_types:
+          type: array
+          description: Order types the listing accepts.
+          example: [market, limit]
+          items:
+            $ref: "#/components/schemas/OrderType"
+    AssetRestrictions:
+      type: object
+      required:
+        - data
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetRestriction"
+      example:
+        data:
+          - venue: cefi
+            countries:
+              - code: AF
+                name: Afghanistan
+          - product_type: perp
+            countries:
+              - code: AF
+                name: Afghanistan
+              - code: CA
+                name: Canada
+              - code: US
+                name: United States
+          - asset_class: stock
+            countries:
+              - code: AF
+                name: Afghanistan
+              - code: US
+                name: United States
+    AssetRestriction:
+      type: object
+      description: A set of assets, selected by exactly one of `venue`, `product_type` or `asset_class`.
+      required:
+        - countries
+      properties:
+        venue:
+          $ref: "#/components/schemas/Venue"
+        product_type:
+          $ref: "#/components/schemas/ProductType"
+        asset_class:
+          $ref: "#/components/schemas/AssetClass"
+        countries:
+          type: array
+          description: Countries the selected assets can't be traded from, sorted by code.
+          items:
+            $ref: "#/components/schemas/Country"
+      example:
+        asset_class: stock
+        countries:
+          - code: GB
+            name: United Kingdom
+          - code: US
+            name: United States
+    Country:
+      type: object
+      required:
+        - code
+        - name
+      properties:
+        code:
+          type: string
+          pattern: "^[A-Z]{2}$"
+          description: ISO 3166-1 alpha-2 code.
+          example: GB
+        name:
+          type: string
+          description: English name.
+          example: United Kingdom
+    AssetAvailability:
+      type: object
+      description: Asset families the caller's country is allowed to trade
+      required:
+        - country
+        - allowed_product_types
+        - allowed_asset_classes
+      properties:
+        country:
+          type: string
+          pattern: "^[A-Z]{2}$"
+          description: >-
+            ISO 3166-1 alpha-2 country the request resolved to, or `XX` when it could not be resolved.
+          example: US
+        allowed_product_types:
+          type: array
+          description: Product types the country may trade. Empty means none.
+          example: [spot, perp]
+          items:
+            $ref: "#/components/schemas/ProductType"
+        allowed_asset_classes:
+          type: array
+          description: Asset classes the country may trade. Empty means none.
+          example: [crypto]
+          items:
+            $ref: "#/components/schemas/AssetClass"
+    ListAssetsResponse:
+      type: object
+      description: Paginated list of tradeable assets
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/AssetItem"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    TransferStatus:
+      type: string
+      enum: [awaiting_signature, pending, completed, failed]
+      example: "pending"
+      description: >
+        The current status of the transfer.
+
+        * **awaiting_signature** — Transfer has been created and is waiting for the client to sign the unsigned payloads and call the execute endpoint.
+
+        * **pending** — Signed transaction has been submitted and is awaiting on-chain confirmation.
+
+        * **completed** — Transfer has been confirmed on-chain.
+
+        * **failed** — Transfer failed due to an on-chain error or rejection.
+    CreateAllocationRequest:
+      type: object
+      description: Request to allocate wallet balance to CeFi trading
+      required:
+        - asset_id
+        - amount
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        amount:
+          type: string
+          description: Amount to allocate, as a positive decimal string
+          example: "100.00"
+
+    AllocationStatus:
+      type: string
+      enum: [allocating, crediting, releasing, completed, rejected, stranded]
+      example: "crediting"
+      description: >
+        Where the allocation stands.
+
+        * **allocating** — The amount is being allocated in the wallet.
+
+        * **crediting** — The amount is allocated and is being credited to CeFi.
+
+        * **releasing** — The allocation was refused and the amount is being freed in the wallet.
+
+        * **completed** — The amount is available to trade on CeFi.
+
+        * **rejected** — The allocation was refused and the amount is free in the wallet again.
+
+        * **stranded** — The outcome is unknown and support has to resolve it.
+
+    Allocation:
+      type: object
+      description: An allocation and what it has left behind on each side so far.
+      required:
+        - id
+        - status
+        - asset_id
+        - asset_symbol
+        - amount
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Allocation identifier
+          example: "c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+        status:
+          $ref: "#/components/schemas/AllocationStatus"
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        asset_symbol:
+          type: string
+          description: Symbol of the listing
+          example: "USDC"
+        amount:
+          type: string
+          description: Amount this allocation sets aside, as a decimal string
+          example: "100.00"
+        allocated_total:
+          type: string
+          description: Everything the caller has allocated of the listing after this allocation, as a decimal string
+          example: "250.00"
+        transfer:
+          $ref: "#/components/schemas/CustodyTransfer"
+        failure_reason:
+          type: string
+          description: Why the allocation was refused or stranded
+          example: "cefi REJECTED"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    CustodyTransfer:
+      type: object
+      description: The CeFi transfer an allocation or release started, under the exchange's id
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          description: Exchange transfer identifier
+          example: "a7f3c2e1-9b4d-4e6f-8a1c-3d5e7f9b2c4a"
+        status:
+          type: string
+          enum: [INITIALIZED, PENDING, PROCESSING, COMPLETED, REJECTED, FAILED]
+          description: Status as last seen from the exchange
+          example: "COMPLETED"
+
+    ListAllocationsResponse:
+      type: object
+      description: Paginated list of allocations
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Allocation"
+          description: List of allocations
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateReleaseRequest:
+      type: object
+      description: Request to release allocated balance from CeFi trading
+      required:
+        - asset_id
+        - amount
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        amount:
+          type: string
+          description: Amount to release, as a positive decimal string
+          example: "100.00"
+
+    ReleaseStatus:
+      type: string
+      enum: [debiting, completed, rejected, stranded]
+      example: "debiting"
+      description: >
+        Where the release stands.
+
+        * **debiting** — The amount is being taken out of CeFi.
+
+        * **completed** — The amount is out of CeFi and free in the wallet again.
+
+        * **rejected** — The release was refused; the amount stays allocated.
+
+        * **stranded** — The outcome is unknown and support has to resolve it.
+
+    Release:
+      type: object
+      description: A release and the CeFi transfer it started.
+      required:
+        - id
+        - status
+        - asset_id
+        - asset_symbol
+        - amount
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Release identifier
+          example: "c1d2e3f4-5a6b-4c7d-8e9f-0a1b2c3d4e5f"
+        status:
+          $ref: "#/components/schemas/ReleaseStatus"
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        asset_symbol:
+          type: string
+          description: Symbol of the listing
+          example: "USDC"
+        amount:
+          type: string
+          description: Amount freed by this release, as a decimal string
+          example: "100.00"
+        transfer:
+          $ref: "#/components/schemas/CustodyTransfer"
+        failure_reason:
+          type: string
+          description: Why the release was refused or stranded
+          example: "cefi REJECTED"
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaperDepositRequest:
+      type: object
+      description: Request to add test funds to the caller's paper wallet
+      required:
+        - asset_id
+        - amount
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        amount:
+          type: string
+          description: Amount to add, as a positive decimal string in asset units
+          example: "1000"
+        allocate:
+          type: boolean
+          description: >-
+            Whether to also allocate the added funds to CeFi trading through an allocation. Unset allocates them when the listing has a CeFi market.
+
+    PaperDepositResponse:
+      type: object
+      description: The test funds added and the allocation setting them aside for CeFi, if any
+      required:
+        - asset_id
+        - amount
+        - wallet_balance
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        amount:
+          type: string
+          description: Amount added, as a decimal string
+          example: "1000"
+        wallet_balance:
+          type: string
+          description: The paper wallet's balance of the listing after the funds were added
+          example: "1000"
+        allocation:
+          $ref: "#/components/schemas/Allocation"
+
+    PaperWithdrawalRequest:
+      type: object
+      description: Request to remove test funds from the caller's paper wallet
+      required:
+        - asset_id
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        amount:
+          type: string
+          description: Amount to remove, as a positive decimal string; omit to empty the wallet
+          example: "250"
+
+    PaperWithdrawalResponse:
+      type: object
+      description: The test funds removed and the CeFi release that freed them, if any
+      required:
+        - asset_id
+        - debited
+        - wallet_balance
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: DeFi listing identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        debited:
+          type: string
+          description: Amount removed from the wallet, as a decimal string
+          example: "250"
+        wallet_balance:
+          type: string
+          description: The paper wallet's balance of the listing after the funds were removed
+          example: "750"
+        release:
+          $ref: "#/components/schemas/Release"
+        cefi_unbacked:
+          type: string
+          description: >-
+            CeFi balance of the listing beyond the caller's allocation, which has no allocation behind it and so was left on CeFi, as a decimal string. Present only when positive.
+          example: "1.877"
+
+    ListReleasesResponse:
+      type: object
+      description: Paginated list of releases
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Release"
+          description: List of releases
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateTransferRequest:
+      type: object
+      description: Request to create a new on-chain transfer
+      required:
+        - asset_id
+        - qty
+        - qty_unit
+        - to
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Asset identifier (UUID)
+          example: "b3d9e5f2-1a4c-4e7b-9f0d-2c8a6b3e5f91"
+        qty:
+          type: string
+          description: Transfer quantity as a positive decimal string
+          example: "100.00"
+        qty_unit:
+          type: string
+          enum: [base, quote]
+          description: >
+            Unit of the quantity.
+
+            * **base** — Quantity is denominated in the base asset.
+
+            * **quote** — Quantity is denominated in the quote asset.
+          example: "base"
+        to:
+          type: string
+          description: Destination wallet address
+          example: "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        network:
+          type: string
+          description: >
+            Destination network for the withdrawal. **Required for CeFi transfers** and **must be omitted for DeFi transfers** (DeFi derives the network from the asset's chain).
+
+
+            The set of supported networks is asset-specific and is retrieved from the [`listAssets`](/api/gateway/list-assets) (`GET /assets`) response: for the asset whose `id` equals this request's `asset_id`, `network` must match one of that asset's `networks[].network` values or any of their `networks[].compatible_networks` values. Matching is case-insensitive. Supplying an unsupported network returns `400 Bad Request`.
+          example: "bitcoin"
+    ExecuteTransferRequest:
+      type: object
+      description: >
+        Request to execute a transfer that is in `awaiting_signature` status. The client must sign each payload returned by the create endpoint and submit the signatures in the same order.
+      required:
+        - signatures
+        - auth_type
+      properties:
+        signatures:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: >
+            One stamp per payload, in the same order as the payloads returned by the create endpoint. With `auth_type: api_key`, an entry is the base64url encoding, without padding, of the JSON `{"publicKey": "<compressed P-256 public key, hex>", "signature": "<DER signature, hex>", "scheme": "SIGNATURE_SCHEME_TK_API_P256"}`, signed as `UnsignedPayload` describes. With `auth_type: web_authn`, an entry is the browser's WebAuthn stamp.
+        auth_type:
+          $ref: "#/components/schemas/SigningMethod"
+    TransferDetail:
+      type: object
+      description: Canonical representation of a transfer.
+      required:
+        - id
+        - status
+        - venue
+        - asset_id
+        - asset_symbol
+        - chain
+        - network
+        - to
+        - qty
+        - qty_unit
+        - sent
+        - fee
+        - received
+        - tx_hash
+        - payloads
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique transfer identifier
+        status:
+          $ref: "#/components/schemas/TransferStatus"
+        venue:
+          $ref: "#/components/schemas/Venue"
+        asset_id:
+          type: string
+          format: uuid
+          description: Asset identifier
+        asset_symbol:
+          type: string
+          description: Asset ticker symbol (e.g. `USDC`, `SOL`)
+        chain:
+          type: string
+          nullable: true
+          description: Blockchain network (e.g. `solana`, `base`) for DeFi transfers, or null for CeFi transfers
+        network:
+          type: string
+          nullable: true
+          description: >
+            Destination network the CeFi withdrawal was submitted on (one of the asset's supported networks from `GET /assets`), or null for DeFi transfers.
+          example: "bitcoin"
+        to:
+          type: string
+          description: Destination wallet address
+        qty:
+          type: string
+          description: Transfer quantity as a decimal string
+        qty_unit:
+          type: string
+          enum: [base, quote]
+          description: Unit of the quantity
+        sent:
+          type: string
+          description: Amount sent as a decimal string
+        fee:
+          type: string
+          description: Fee as a decimal string
+        received:
+          type: string
+          description: Amount received as a decimal string
+        tx_hash:
+          type: string
+          description: On-chain transaction hash
+        explorer_url:
+          type: string
+          nullable: true
+          description: Public block-explorer page for `tx_hash`, null until the transfer is broadcast
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+          description: >
+            Unsigned transaction payloads for the client to sign. Present when status is `awaiting_signature`; empty array after execution.
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the transfer was created (RFC 3339)
+        updated_at:
+          type: string
+          format: date-time
+          description: Timestamp of the last status update (RFC 3339)
+    ListTransfersResponse:
+      type: object
+      description: Paginated list of transfers
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransferDetail"
+          description: List of transfers
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    CreateRampRequest:
+      type: object
+      description: Request to create a ramp
+      required:
+        - payment_method
+        - direction
+        - amount
+      properties:
+        payment_method:
+          $ref: "#/components/schemas/RampPaymentMethod"
+        direction:
+          type: string
+          enum:
+            - onramp
+            - offramp
+          description: "`onramp` buys crypto with fiat. `offramp` sells crypto for fiat."
+        amount:
+          type: string
+          description: >
+            Decimal string. Fiat to spend on an onramp, or settlement stablecoin to sell on an offramp. Greater than 0 and at most 100000.
+          example: "100.50"
+        channel:
+          type: string
+          enum:
+            - web
+            - ios
+            - android
+          description: Surface the request originates from. Required for `APPLE_PAY` and `GOOGLE_PAY`.
+          example: ios
+    CreateRampResponse:
+      type: object
+      description: A created ramp, with the provider page to complete it on
+      required:
+        - id
+        - redirect_url
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Ramp ID, used by every other ramp endpoint
+        redirect_url:
+          type: string
+          description: Provider page the user completes the sale on
+        bridge_plan:
+          $ref: "#/components/schemas/RampBridgePlan"
+    RampBridgePlan:
+      type: object
+      description: >
+        Present when the user's own funds must move onto the settlement chain before the offramp transfer. Sign every payload and submit the signatures to `POST /ramps/{id}/bridge/execute`.
+      required:
+        - id
+        - payloads
+        - steps
+        - shortfall
+      properties:
+        id:
+          type: string
+          description: Bridge ID
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/RampBridgeStep"
+        shortfall:
+          $ref: "#/components/schemas/RampBridgeShortfall"
+    RampBridgeStep:
+      type: object
+      description: One fund movement in a bridge plan
+      required:
+        - kind
+        - amount
+        - asset_symbol
+        - src_chain
+      properties:
+        kind:
+          type: string
+          description: The kind of movement, e.g. a same-chain swap or a cross-chain bridge
+        amount:
+          type: string
+          description: Amount moved in this step, as a decimal string
+        asset_symbol:
+          type: string
+          description: Symbol debited in this step
+        dst_asset_symbol:
+          type: string
+          description: Symbol credited in this step, when it differs from the debited one
+        src_chain:
+          type: string
+          description: Chain the step debits from
+    RampBridgeShortfall:
+      type: object
+      description: The amount of the settlement asset the bridge plan covers
+      required:
+        - amount
+        - asset_symbol
+      properties:
+        amount:
+          type: string
+          description: Amount to be bridged, as a decimal string
+        asset_symbol:
+          type: string
+          description: Settlement asset symbol
+    RampBridgeExecuteRequest:
+      type: object
+      description: Signatures over a bridge plan's payloads, in the same order
+      required:
+        - signatures
+        - auth_type
+      properties:
+        signatures:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: >
+            One stamp per payload, in the same order as the payloads in the bridge plan. With `auth_type: api_key`, an entry is the base64url encoding, without padding, of the JSON `{"publicKey": "<compressed P-256 public key, hex>", "signature": "<DER signature, hex>", "scheme": "SIGNATURE_SCHEME_TK_API_P256"}`, signed as `UnsignedPayload` describes. With `auth_type: web_authn`, an entry is the browser's WebAuthn stamp.
+        auth_type:
+          $ref: "#/components/schemas/SigningMethod"
+    RampBridgeExecuteResponse:
+      type: object
+      description: The executed bridge
+      required:
+        - bridge_id
+      properties:
+        bridge_id:
+          type: string
+    RampTransferPrepareResponse:
+      type: object
+      description: Unsigned payloads for the transfer that sends funds to the provider
+      required:
+        - transfer_id
+        - payloads
+      properties:
+        transfer_id:
+          type: string
+        payloads:
+          type: array
+          items:
+            $ref: "#/components/schemas/UnsignedPayload"
+    RampTransferExecuteRequest:
+      type: object
+      description: The prepared transfer and the signatures over its payloads
+      required:
+        - transfer_id
+        - signatures
+        - auth_type
+      properties:
+        transfer_id:
+          type: string
+          description: Transfer ID returned by the prepare endpoint
+        signatures:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: >
+            One stamp per payload, in the same order as the payloads returned by the prepare endpoint. With `auth_type: api_key`, an entry is the base64url encoding, without padding, of the JSON `{"publicKey": "<compressed P-256 public key, hex>", "signature": "<DER signature, hex>", "scheme": "SIGNATURE_SCHEME_TK_API_P256"}`, signed as `UnsignedPayload` describes. With `auth_type: web_authn`, an entry is the browser's WebAuthn stamp.
+        auth_type:
+          $ref: "#/components/schemas/SigningMethod"
+    RampTransferExecuteResponse:
+      type: object
+      description: The settled on-chain transfer to the provider
+      required:
+        - tx_hash
+        - chain
+        - asset
+        - from
+        - to
+        - sent
+        - fee
+        - received
+      properties:
+        tx_hash:
+          type: string
+        chain:
+          type: string
+        asset:
+          type: string
+        from:
+          type: string
+        to:
+          type: string
+        sent:
+          type: string
+        fee:
+          type: string
+        received:
+          type: string
+    RampDetail:
+      type: object
+      description: >
+        Canonical representation of a ramp, served from the Gateway's own record. The settlement fields are filled in as the ramp progresses, so they are absent on a freshly created ramp and present once it settles.
+      required:
+        - id
+        - payment_method
+        - direction
+        - status
+        - amount
+        - chain
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        payment_method:
+          $ref: "#/components/schemas/RampPaymentMethod"
+        direction:
+          type: string
+          enum:
+            - onramp
+            - offramp
+        status:
+          $ref: "#/components/schemas/RampStatus"
+        amount:
+          type: string
+          description: Amount requested at creation, in the settlement asset
+        chain:
+          allOf:
+            - $ref: "#/components/schemas/Chain"
+          description: Chain the ramp settles on
+        asset_symbol:
+          type: string
+        asset_amount:
+          type: string
+          description: Amount actually settled
+        fiat_currency:
+          type: string
+        fiat_amount:
+          type: string
+        fee_amount:
+          type: string
+        fee_currency:
+          type: string
+        exchange_rate:
+          type: string
+        wallet_address:
+          type: string
+          description: Address the ramp settles against
+        provider_wallet_address:
+          type: string
+          description: Provider deposit address the offramp transfer sends to
+        tx_hash:
+          type: string
+        redirect_url:
+          type: string
+        failure_reason:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+    AssetFlow:
+      type: string
+      description: >
+        Direction the row's asset moved relative to the caller's holdings, for rendering a row without reading the typed object. Scoped to `asset_symbol`, so a buy is `in` even though value moved out. Compose your own label from `type` and this field.
+      enum:
+        - in
+        - out
+    TransactionType:
+      type: string
+      description: Kind of activity a transaction-feed row represents.
+      enum:
+        - order
+        - transfer
+        - ramp
+        - received_transfer
+    TransactionStatus:
+      type: string
+      description: >
+        Lifecycle bucket shared by every type. Each type's native status stays verbatim inside the row's typed object; a received transfer has none and is always `completed`. `active` is an order resting on its venue (`active`, or `cancel_pending` until the cancel lands); `pending` is one not yet live there.
+      enum:
+        - pending
+        - active
+        - completed
+        - failed
+        - canceled
+    TransactionDetail:
+      type: object
+      description: >
+        One feed row. Exactly one of `order`, `transfer`, `ramp`, or `received_transfer` is present, matching `type`; the first three hold the same shape that type's own endpoint returns.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Id of the underlying order, transfer, ramp, or received transfer
+        type:
+          $ref: "#/components/schemas/TransactionType"
+        asset_flow:
+          $ref: "#/components/schemas/AssetFlow"
+        status:
+          $ref: "#/components/schemas/TransactionStatus"
+        created_at:
+          type: string
+          format: date-time
+          description: >
+            When the row was created; for a received transfer, the time of the block that carried it
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the row reached a terminal status; null while in flight
+        qty:
+          type: string
+          nullable: true
+          description: >
+            Quantity denominated in `asset_symbol`: executed quantity for a filled order, requested quantity for an unfilled one, tokens sent for a transfer (its base quantity until it sends), settled amount for a ramp, received amount for a received transfer. Null when none is known yet: an unfilled quote-denominated order, a quote-denominated transfer not yet sent, or an unsettled ramp.
+        asset_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Null for ramps until they carry an asset id, and for received transfers
+        asset_symbol:
+          type: string
+          nullable: true
+        tx_hash:
+          type: string
+          nullable: true
+          description: Set once the row settles on-chain
+        explorer_url:
+          type: string
+          nullable: true
+          description: >
+            Public block-explorer page for the row: the order's, transfer's, or received transfer's, or the Solana page for a ramp. Null while `tx_hash` is null and for CeFi orders.
+        failure_reason:
+          type: string
+          nullable: true
+          description: Venue-supplied reason, set only on a failed row
+        order:
+          allOf:
+            - $ref: "#/components/schemas/OrderDetail"
+          description: Present only when `type` is `order`
+        transfer:
+          allOf:
+            - $ref: "#/components/schemas/TransferDetail"
+          description: Present only when `type` is `transfer`
+        ramp:
+          allOf:
+            - $ref: "#/components/schemas/RampDetail"
+          description: Present only when `type` is `ramp`
+        received_transfer:
+          allOf:
+            - $ref: "#/components/schemas/ReceivedTransferDetail"
+          description: Present only when `type` is `received_transfer`
+    ReceivedTransferDetail:
+      type: object
+      description: >
+        A transfer into the caller's wallet that none of their own platform activity explains.
+      required:
+        - id
+        - chain
+        - tx_hash
+        - from_address
+        - to_address
+        - token_address
+        - token_symbol
+        - amount
+        - observed_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        chain:
+          type: string
+          description: Chain the transfer landed on
+          example: solana
+        tx_hash:
+          type: string
+        from_address:
+          type: string
+          description: Address the transfer came from
+        to_address:
+          type: string
+          description: The caller's wallet address it credited
+        token_address:
+          type: string
+          description: Contract or mint address of the token received
+        token_symbol:
+          type: string
+          example: USDC
+        amount:
+          type: string
+          description: Amount received, in `token_symbol`
+          example: "25.5"
+        observed_at:
+          type: string
+          format: date-time
+          description: Time of the block that carried the transfer
+    ListTransactionsResponse:
+      type: object
+      description: Paginated unified feed of orders, transfers, ramps, and received transfers
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/TransactionDetail"
+          description: List of transactions, newest first
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    OrganizationTransaction:
+      allOf:
+        - $ref: "#/components/schemas/TransactionDetail"
+        - type: object
+          description: A transaction with the served user it belongs to
+          required:
+            - user_id
+            - external_ref_id
+          properties:
+            user_id:
+              type: string
+              format: uuid
+              description: The served user this transaction belongs to
+            external_ref_id:
+              type: string
+              description: Your reference for the served user
+              example: "customer-4821"
+    ListOrganizationTransactionsResponse:
+      type: object
+      description: Paginated feed across an organization's users
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationTransaction"
+          description: Transactions, newest first
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    TransactionOrderType:
+      type: string
+      description: An order type, or the trigger type of a take-profit or stop-loss order.
+      enum:
+        - market
+        - limit
+        - take_profit
+        - stop_loss
+    StatsWindow:
+      type: string
+      description: "`24h` has 24 hourly buckets; `7d` and `30d` have daily buckets."
+      enum: ["24h", "7d", "30d"]
+      example: "7d"
+    StatsPoint:
+      type: object
+      description: One bucket of the stats series
+      required:
+        - timestamp
+        - volume
+        - orders
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+          description: Start of the bucket, UTC
+          example: "2026-11-09T00:00:00Z"
+        volume:
+          type: string
+          description: Filled notional in USD
+          example: "1250.75"
+        orders:
+          type: integer
+          description: Orders placed in the bucket
+          example: 3
+    StatsTopAsset:
+      type: object
+      description: An asset ranked by filled volume
+      required:
+        - asset_id
+        - asset_symbol
+        - volume
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+        asset_symbol:
+          type: string
+          example: "BTC"
+        volume:
+          type: string
+          description: Filled notional in USD
+          example: "9800.12"
+    OrganizationTransactionStats:
+      type: object
+      description: An organization's trading totals over a window
+      required:
+        - window
+        - volume
+        - orders
+        - filled_orders
+        - fees
+        - trading_users
+        - last_order_at
+        - series
+        - top_assets
+      properties:
+        window:
+          $ref: "#/components/schemas/StatsWindow"
+        volume:
+          type: string
+          description: Filled notional in USD
+          example: "15230.5"
+        orders:
+          type: integer
+          description: Orders placed in the window
+          example: 42
+        filled_orders:
+          type: integer
+          description: Orders placed in the window with at least one fill
+          example: 37
+        fees:
+          type: string
+          description: Fees charged on filled orders, in USD
+          example: "15.23"
+        trading_users:
+          type: integer
+          description: Served users with at least one fill in the window
+          example: 9
+        last_order_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: The most recent order by any served user, at any time; `null` when there is none
+        series:
+          type: array
+          description: Every bucket of the window, oldest first, the last holding now
+          items:
+            $ref: "#/components/schemas/StatsPoint"
+        top_assets:
+          type: array
+          description: Up to 5 assets with a fill in the window, by volume, highest first; empty when nothing filled
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/StatsTopAsset"
+    ListRampsResponse:
+      type: object
+      description: Paginated list of ramps
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/RampDetail"
+          description: List of ramps
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    RampPaymentMethod:
+      type: string
+      description: >
+        Rail the ramp is funded or paid out through. DeFi routes the provider from it, so it is the caller's only choice of venue. `APPLE_PAY` and `GOOGLE_PAY` are onramp-only and require a `channel`.
+      enum:
+        - COINBASE
+        - PAYPAL
+        - APPLE_PAY
+        - GOOGLE_PAY
+    RampStatus:
+      type: string
+      description: >
+        Ramp lifecycle: `created` until funds move, `pending` while the provider settles, then `completed`, `failed`, or `expired` if it was abandoned before any funds moved.
+      enum:
+        - created
+        - pending
+        - completed
+        - failed
+        - expired
+    Error:
+      type: object
+      description: Shared API error envelope
+      required:
+        - type
+        - message
+        - request_id
+      properties:
+        type:
+          type: string
+          description: Closed error category fixing the HTTP status
+          enum:
+            - invalid_argument
+            - unauthenticated
+            - permission_denied
+            - not_found
+            - method_not_allowed
+            - conflict
+            - failed_precondition
+            - resource_exhausted
+            - unavailable
+            - internal
+        code:
+          type: string
+          description: >-
+            Specific error condition from the fleet code registry. Extensible: clients MUST tolerate values not listed here and fall back to type-based handling. Omitted when no code applies.
+          x-extensible-enum:
+            - allowance_approval_required
+            - already_submitted
+            - amount_above_maximum
+            - amount_below_minimum
+            - buy_not_allowed
+            - chain_not_supported
+            - guest_checkout_limit_exceeded
+            - guest_checkout_unavailable
+            - insufficient_balance
+            - insufficient_native_balance
+            - invalid_leverage
+            - invalid_otp_code
+            - invalid_qty_precision
+            - no_liquidity
+            - order_not_open
+            - order_rejected
+            - phone_not_verified
+            - phone_verification_expired
+            - prepared_action_not_found
+            - price_out_of_range
+            - quote_stale
+            - reduce_only_exceeds_position
+            - same_asset
+            - sell_not_allowed
+            - session_expired
+            - settlement_policy_required
+            - wallet_exported
+            - release_settling
+            - country_restricted
+        message:
+          type: string
+          description: Human-readable error message
+        metadata:
+          type: object
+          description: >-
+            Machine-readable context scoped to `code`; values are always strings. Which keys appear is determined by `code`.
+          additionalProperties:
+            type: string
+        field_violations:
+          type: array
+          description: >-
+            Per-field rejections, present on `invalid_argument` when the request failed field validation.
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                description: Dotted path to the offending field, as the client sent it
+              message:
+                type: string
+                description: Human-readable reason the field was rejected
+        request_id:
+          type: string
+          description: Per-request correlation ID, empty when unavailable

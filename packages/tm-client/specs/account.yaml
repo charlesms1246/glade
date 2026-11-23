@@ -1,0 +1,645 @@
+openapi: 3.0.3
+info:
+  title: True Markets Account API
+  description: |
+    Account API for the True Markets platform — organization users, agreements and how a user is set up to trade.
+
+    ## Base URLs
+
+    | Environment | Base URL |
+    |---|---|
+    | Production | `https://api.truemarkets.co/v1/account` |
+    | UAT (sandbox) | `https://api.uat.truemarkets.co/v1/account` |
+
+    > UAT is the testing environment. It may require VPN/allowlist access for some integrations — contact [support@truemarkets.co](mailto:support@truemarkets.co) if requests time out from a public network.
+
+    ## Authentication
+
+    All endpoints require a JWT access token in the `Authorization: Bearer <token>` header.
+
+    ### Getting credentials
+
+    There are two ways in, and each uses its own keys.
+
+    **Gateway (an organization trading for its users).** Create an organization and an API key in the dashboard, then mint a token with `POST /v1/auth/api-key/token`. An organization token lasts one hour and has no refresh token, so mint a new one before it expires. Act for a user with `TM-On-Behalf-Of: <user_id>`, and sign that user's payloads with their signer key, not the organization API key.
+
+    **Trading API (your own account).**
+
+    1. **Create an account** at [https://www.truemarkets.co](https://www.truemarkets.co) (passkey, email, magic link, or Sign in with Apple).
+    2. **Register an API key** in your account's *API Keys* settings page. Generate an EC P-256 key pair locally and submit only the public key — the private key never leaves your machine. You'll receive a `key_id` (UUID). The same key signs you in and signs your payloads.
+    3. **Mint JWTs** by calling `POST /v1/auth/api-key/token` with `key_id`, a current `timestamp` (Unix seconds, within ±30s of server UTC time), and `signature` — an ES256 (ECDSA P-256 + SHA-256) signature of the message `{key_id}.{timestamp}`, base64url-encoded. The response returns `access_token` and `refresh_token`.
+    4. **Call the Account API** with `Authorization: Bearer <access_token>`.
+    5. **Refresh** expired access tokens via `POST /v1/auth/token/refresh` with the `refresh_token` — no re-signing required.
+
+    ### Quick start
+
+    ```bash
+    # Mint a JWT
+    curl -X POST https://api.truemarkets.co/v1/auth/api-key/token \
+      -H "Content-Type: application/json" \
+      -d '{"key_id":"<UUID>","timestamp":<UNIX_SECONDS>,"signature":"<BASE64URL_ES256_SIG>"}'
+
+    # List your crypto deposit addresses
+    curl https://api.truemarkets.co/v1/account/deposits/addresses \
+      -H "Authorization: Bearer <ACCESS_TOKEN>"
+    ```
+
+    ## Support
+    - 📧 [support@truemarkets.co](mailto:support@truemarkets.co)
+  version: "1.30.0"
+servers:
+  - url: https://api.truemarkets.co/v1/account
+    description: Production
+  - url: https://api.uat.truemarkets.co/v1/account
+    description: UAT (sandbox)
+tags:
+  - name: Organizations
+    description: The users an organization trades for. Each user is created with wallets and addressed on trading routes through `TM-On-Behalf-Of`.
+  - name: Trading Setup
+    description: How a user is set up to trade and to settle what they trade.
+paths:
+  /me/trading:
+    get:
+      operationId: getTradingSetup
+      tags:
+        - Trading Setup
+      summary: Get the user's trading setup
+      description: |
+        Returns how the user is set up to trade and to settle.
+
+        - `wallets` lists the wallets the user holds: `main`, their own wallet, and `strategies`,
+          the wallet strategies trade from. A wallet the user does not hold is omitted. Each
+          `main` address reports `settlement_authority`: whether the user has authorized
+          settlement of CeFi trades on that chain.
+        - `trading.cefi` is enabled once the user has a CeFi trading account; `accounts` lists
+          them, each naming the wallet it settles against and its `client_id`.
+        - `trading.defi` is enabled once the user holds a `main` wallet.
+        - `settlement.defi` is enabled when CeFi trading is enabled and every `main` address has
+          settlement authority. `settlement.paxos` is enabled once the user has a Paxos account.
+
+        A CeFi listing can be traded when `trading.cefi.enabled` and the `settlement` rail the
+        listing settles on are both enabled.
+
+        An organization token reads one of its users' setup with `TM-On-Behalf-Of`.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OnBehalfOf"
+      responses:
+        "200":
+          description: The user's trading setup
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TradingSetupResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /organizations/{organization_id}/users:
+    post:
+      x-internal: false
+      operationId: createOrganizationUser
+      tags:
+        - Organizations
+      summary: Create a user your organization trades for
+      description: |
+        Creates the user your organization trades for under the reference you name them by, with
+        their wallets, or returns the existing one. The wallets are seated with exactly one of your
+        own signer key or a passkey; the passkey signs at Turnkey only and never signs the user in.
+        Re-sending the same request is safe: a 503 means the wallet step did not finish, and
+        repeating the request completes it. Once your organization reaches its user limit a new
+        reference is refused, while re-sending an existing one still works.
+        Use the returned `user_id` as the `TM-On-Behalf-Of` value on trading routes.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationIdParam"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateOrganizationUserRequest"
+      responses:
+        "200":
+          description: The user already held wallets; the signer sent was not used
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationUser"
+        "201":
+          description: This call seated the user's wallets with the signer sent
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationUser"
+        "400":
+          description: Malformed organization id, external reference, signer public key or passkey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The reference names a member of the organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: The organization has reached its user limit; contact support to raise it
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Service unavailable; retry the same request
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      x-internal: false
+      operationId: listOrganizationUsers
+      tags:
+        - Organizations
+      summary: List the users your organization trades for
+      description: |
+        Returns your organization's users, newest first. Page with the opaque `cursor` from
+        `pagination.next_cursor`. Supply `external_ref_id` instead to look up a single user by the
+        reference you created them with; a reference matching nothing is an empty page.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationIdParam"
+        - name: external_ref_id
+          in: query
+          required: false
+          description: Narrow the page to the user created under this reference.
+          schema:
+            $ref: "#/components/schemas/ExternalRefId"
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from a prior page.
+          schema:
+            type: string
+        - name: limit
+          in: query
+          required: false
+          description: Maximum users to return; above 100 is clamped to 100 and echoed back.
+          schema:
+            type: integer
+            minimum: 1
+            default: 50
+      responses:
+        "200":
+          description: A page of users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationUserPage"
+        "400":
+          description: Malformed organization id, external reference, cursor or limit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /organizations/{organization_id}/users/{user_id}:
+    get:
+      x-internal: false
+      operationId: getOrganizationUser
+      tags:
+        - Organizations
+      summary: Get a user your organization trades for
+      description: Returns one of your organization's users, with the wallets held for them.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: "#/components/parameters/OrganizationIdParam"
+        - name: user_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The user your organization trades for
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrganizationUser"
+        "400":
+          description: Malformed organization id or user id
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Your organization does not trade for this user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          description: Service unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >
+        An access token from `POST /v1/auth/api-key/token`. An organization token lasts one hour and has no refresh token; a personal token can be refreshed.
+  parameters:
+    OrganizationIdParam:
+      name: organization_id
+      in: path
+      required: true
+      description: >
+        Your organization's id: the `tm.organization_id` claim of an organization token, also shown on the dashboard Overview. The token must be this organization's, or belong to one of its admins.
+      schema:
+        type: string
+        format: uuid
+    OnBehalfOf:
+      name: TM-On-Behalf-Of
+      in: header
+      required: false
+      description: >
+        Act as one of your organization's users. The value is the `user_id` returned when the user was created; the request then reads that user's account. Requires an organization token and a user your organization created: `400` for a personal token, a repeated header or a non-UUID, `403` for a user outside your organization.
+      schema:
+        type: string
+        format: uuid
+      example: 3f6d2c0e-8a41-4c2b-9f1e-2b7d5c0a9e11
+  responses:
+    Unauthorized:
+      description: Unauthorized
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: Forbidden
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    InternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    ExternalRefId:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{1,64}$"
+      description: >-
+        The reference the client names a served user by, unique within the organization. Compared exactly as sent, with no case or format normalisation, so send the same string every time (a UUID in one consistent case).
+    CreateOrganizationUserRequest:
+      type: object
+      description: >-
+        Creates or finds a user the organization trades for. Exactly one of `signer_public_key` or `passkey` is required.
+      required:
+        - external_ref_id
+      properties:
+        external_ref_id:
+          $ref: "#/components/schemas/ExternalRefId"
+        signer_public_key:
+          type: string
+          description: Turnkey signer key, a 33-byte compressed P-256 point as 66 hex characters
+        passkey:
+          $ref: "#/components/schemas/PasskeyCredential"
+    PasskeyCredential:
+      type: object
+      description: A WebAuthn passkey registration, as returned by `navigator.credentials.create`.
+      required:
+        - challenge
+        - credential_id
+        - client_data
+        - attestation
+      properties:
+        challenge:
+          type: string
+          description: The challenge passed to `navigator.credentials.create`
+        credential_id:
+          type: string
+          description: The credential id, unpadded base64url
+        client_data:
+          type: string
+          description: The client data JSON, unpadded base64url
+        attestation:
+          type: string
+          description: The WebAuthn attestation object, unpadded base64url
+    OrganizationUser:
+      type: object
+      description: A user the organization trades for
+      required:
+        - user_id
+        - external_ref_id
+        - created_at
+        - wallets
+      properties:
+        user_id:
+          type: string
+          format: uuid
+        external_ref_id:
+          $ref: "#/components/schemas/ExternalRefId"
+        created_at:
+          type: string
+          format: date-time
+        wallets:
+          type: array
+          description: Empty only while the wallet step has not completed; re-send the create to finish it.
+          items:
+            $ref: "#/components/schemas/OrganizationUserWallet"
+    OrganizationUserPage:
+      type: object
+      required:
+        - data
+        - pagination
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrganizationUser"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+    OrganizationUserWallet:
+      type: object
+      required:
+        - address
+        - chain_family
+      properties:
+        address:
+          type: string
+        chain_family:
+          type: string
+          enum: [evm, solana]
+          description: >-
+            The family of chains this address serves. An `evm` address is the same on every EVM chain (base, arbitrum, robinhood); a `solana` address serves solana.
+    # Trading Setup Schemas
+    TradingSetupResponse:
+      type: object
+      description: How a user is set up to trade and to settle what they trade
+      required:
+        - id
+        - wallets
+        - trading
+        - settlement
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The user's id
+        wallets:
+          type: array
+          description: The wallets the user holds, `main` first; empty when they hold none
+          items:
+            $ref: "#/components/schemas/TradingWallet"
+        trading:
+          $ref: "#/components/schemas/TradingSetupTrading"
+        settlement:
+          $ref: "#/components/schemas/TradingSetupSettlement"
+      example:
+        id: 9f1c2a4e-3b7d-4e1a-8c2f-5d6e7f8a9b0c
+        wallets:
+          - name: main
+            provider: turnkey
+            addresses:
+              - chain: solana
+                address: 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU
+                settlement_authority: true
+              - chain: evm
+                address: "0x3f1eA2C5fE0f8eB7dB1c9a1F9c3B0b5C1d2E3f40"
+                settlement_authority: true
+          - name: strategies
+            provider: turnkey
+            addresses:
+              - chain: solana
+                address: 4mPqzVZ8r1Tq6Yd3dS5bVb1h7cS2kJ9uWm8xL3nQe2Pf
+              - chain: evm
+                address: "0x9d2B4e6F8a0C1d3E5f7A9b0C2d4E6f8A0b1C3d5E"
+        trading:
+          cefi:
+            enabled: true
+            accounts:
+              - wallet: main
+                client_id: "79054348114451737"
+          defi:
+            enabled: true
+        settlement:
+          defi:
+            enabled: true
+          paxos:
+            enabled: false
+    TradingWallet:
+      type: object
+      description: One of the user's wallets with its address on each chain
+      required:
+        - name
+        - provider
+        - addresses
+      properties:
+        name:
+          type: string
+          enum: [main, strategies]
+          description: >
+            `main` is the user's own wallet; `strategies` is the wallet strategies trade from.
+        provider:
+          type: string
+          enum: [turnkey]
+          description: Who holds the wallet's keys
+        addresses:
+          type: array
+          items:
+            $ref: "#/components/schemas/TradingWalletAddress"
+    TradingWalletAddress:
+      type: object
+      description: A wallet's address on one chain
+      required:
+        - chain
+        - address
+      properties:
+        chain:
+          type: string
+          enum: [solana, evm]
+        address:
+          type: string
+        settlement_authority:
+          type: boolean
+          description: >
+            Whether the user has authorized settlement of CeFi trades on this chain. Present only on `main` wallet addresses.
+    TradingSetupTrading:
+      type: object
+      description: The venues the user can trade on
+      required:
+        - cefi
+        - defi
+      properties:
+        cefi:
+          $ref: "#/components/schemas/CefiTradingSetup"
+        defi:
+          $ref: "#/components/schemas/EnabledStatus"
+    CefiTradingSetup:
+      type: object
+      description: Whether the user can trade on CeFi, and their CeFi trading accounts
+      required:
+        - enabled
+        - accounts
+      properties:
+        enabled:
+          type: boolean
+          description: True once the user has a CeFi trading account
+        accounts:
+          type: array
+          description: The user's CeFi trading accounts; empty when they have none
+          items:
+            $ref: "#/components/schemas/CefiTradingAccount"
+    CefiTradingAccount:
+      type: object
+      description: A CeFi trading account and the wallet it settles against
+      required:
+        - wallet
+        - client_id
+      properties:
+        wallet:
+          type: string
+          enum: [main]
+          description: The wallet the account settles against
+        client_id:
+          type: string
+          description: The account's CeFi trading client id
+    TradingSetupSettlement:
+      type: object
+      description: The custody rails the user's CeFi trades can settle on
+      required:
+        - defi
+        - paxos
+      properties:
+        defi:
+          $ref: "#/components/schemas/EnabledStatus"
+        paxos:
+          $ref: "#/components/schemas/EnabledStatus"
+    EnabledStatus:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+    Pagination:
+      type: object
+      description: Pagination metadata
+      required:
+        - next_cursor
+        - limit
+      properties:
+        next_cursor:
+          type: string
+          nullable: true
+          description: Cursor for the next page of results, null if no more pages
+        limit:
+          type: integer
+          description: Number of results returned in this page
+
+    # Common Schemas
+    Error:
+      type: object
+      description: Shared API error envelope
+      required:
+        - type
+        - message
+        - request_id
+      properties:
+        type:
+          type: string
+          description: Closed error category fixing the HTTP status
+          enum:
+            - invalid_argument
+            - unauthenticated
+            - permission_denied
+            - not_found
+            - method_not_allowed
+            - conflict
+            - failed_precondition
+            - resource_exhausted
+            - unavailable
+            - internal
+        code:
+          type: string
+          description: >-
+            Specific error condition from the fleet code registry, which is shared across services rather than owned by this one. Extensible: clients MUST tolerate any value and fall back to type-based handling. Omitted when no code applies.
+        message:
+          type: string
+          description: Human-readable error message
+        metadata:
+          type: object
+          description: >-
+            Machine-readable context scoped to `code`; values are always strings. Which keys appear is determined by `code`.
+          additionalProperties:
+            type: string
+        field_violations:
+          type: array
+          description: >-
+            Per-field rejections, present on `invalid_argument` when the request failed field validation.
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                description: Dotted path to the offending field, as the client sent it
+              message:
+                type: string
+                description: Human-readable reason the field was rejected
+        request_id:
+          type: string
+          description: Per-request correlation ID, empty when unavailable

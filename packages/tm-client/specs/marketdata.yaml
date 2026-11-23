@@ -1,0 +1,2450 @@
+openapi: 3.1.0
+info:
+  title: Market Data Service API
+  description: |
+    Real-time and historical market data for True Markets: price candles, windowed
+    and point-in-time price history, technical indicators, market capitalization,
+    and trending and surging asset rankings.
+
+    ## Base URLs
+
+    | Environment | Base URL |
+    |---|---|
+    | Production | `https://api.truemarkets.co` |
+    | UAT (sandbox) | `https://api.uat.truemarkets.co` |
+
+    Real-time streaming (price candles, trending assets, surging assets, reference
+    prices) is documented separately in the [Market Data WebSocket AsyncAPI spec](./asyncapi.yaml).
+
+    ## Authentication
+
+    Every endpoint in this API is public; no token is needed.
+
+    ## Endpoints
+
+    - **Prices** — current candles, windowed and point-in-time history, batched lookups across multiple symbols, and min/max ranges.
+    - **Market Cap** — latest market capitalization for a single asset or for the top assets ranked by market cap.
+    - **Market Feed** — assets ranked by trending ratio or by the size of their recent price move.
+    - **Streams** — server-sent quote streams.
+    - **Assets**: price, volume, liquidity and candles for any asset by address, listed or not.
+
+    ## Errors
+
+    Every failure returns the shared envelope: a closed `type` fixing the HTTP
+    status, a human-readable `message`, and the `request_id` to quote in a
+    support request. Branch on `type`, never on `message`.
+
+    ## Time Window & Resolution
+
+    History endpoints accept a `window` (lookback period) and a `resolution` (gap
+    between data points). Both use the format `{value}{unit}`:
+
+    - `window` units — `m` minutes, `h` hours, `d` days, `M` months. Examples: `1h`, `7d`, `1M`.
+    - `resolution` units — `s` seconds, `m` minutes, `h` hours, `d` days. Examples: `5s`, `1m`, `1h`.
+
+    ## Numeric Precision
+
+    Prices, market caps, and other numeric values are returned as strings to
+    preserve full decimal precision and avoid floating-point rounding.
+
+    ## Support
+
+    - 📧 [support@truemarkets.co](mailto:support@truemarkets.co)
+  version: 0.22.0
+servers:
+  - url: https://api.truemarkets.co
+    description: Production
+  - url: https://api.uat.truemarkets.co
+    description: UAT (sandbox)
+tags:
+  - name: Prices
+    description: Current price candles and historical price points for spot assets.
+  - name: Market Cap
+    description: Latest market capitalization for individual assets and ranked listings.
+  - name: Market Feed
+    description: Assets ranked by trending ratio or by the size of their recent price move.
+  - name: Streams
+    description: Server-sent quote streams.
+  - name: Assets
+    description: Price, volume, liquidity and candles for any asset by address, listed or not.
+paths:
+  /v1/defi/market/prices:
+    get:
+      summary: Get price candles by symbol
+      operationId: getPrices
+      tags: [Prices]
+      description: |
+        Returns the latest price candles (open/high/low/close) for an asset across
+        multiple standard intervals (1h, 4h, 24h). Useful for rendering at-a-glance
+        price summaries.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch candles for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: asset_class
+          in: query
+          description: |
+            Asset class to resolve the asset in. Defaults to `spot`; if the
+            asset has no spot listing at all, falls back to `perp`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price candle data for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceResponse"
+        "400":
+          description: Bad request - symbol parameter is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Symbol not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/history:
+    get:
+      summary: Get price history for a symbol
+      operationId: getPriceHistory
+      tags: [Prices]
+      description: |
+        Returns historical price points for an asset over a configurable lookback
+        window, sampled at a configurable resolution. Use for charting and
+        time-series analysis.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch history for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: as_of
+          in: query
+          description: >-
+            Ends the window at this instant instead of now, so a past period can be read. RFC3339, and not the zero time. A future instant bounds a window that is still filling. Absent reads live data.
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: "2026-01-02T03:04:05Z"
+        - name: resolution
+          in: query
+          description: Gap between consecutive data points (e.g. `5s`, `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the symbol in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price history data for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Symbol not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/history/point:
+    get:
+      summary: Get price at a point in time
+      operationId: getPriceAtTime
+      tags: [Prices]
+      description: |
+        Returns the last known price for an asset at or before the given timestamp.
+        Use this to value a position, settle a trade, or anchor a calculation to a
+        specific moment in time.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to look up (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: timestamp
+          in: query
+          description: Unix timestamp in seconds. The response returns the most recent price at or before this moment.
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the symbol in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price at the requested point in time
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PricePointResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No price data found for the given symbol and timestamp
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/history/batch:
+    get:
+      summary: Get price history for multiple symbols
+      operationId: getPriceHistoryBatch
+      tags: [Prices]
+      description: |
+        Returns price history for multiple symbols in a single request. Each symbol
+        is resolved independently — an unknown or failing symbol returns a per-symbol
+        error in its result entry instead of failing the whole batch, so partial
+        results are still returned.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_ids
+          in: query
+          description: |
+            Comma-separated list of backend asset IDs. Mutually exclusive with
+            `symbols`: exactly one of the two is required, and naming both is a
+            400.
+          required: false
+          schema:
+            type: string
+        - name: symbols
+          in: query
+          description: Comma-separated list of asset symbols (e.g. `SOL,BTC,ETH`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Gap between consecutive data points (e.g. `5s`, `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: Batch price history data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchPriceHistoryResponse"
+              example:
+                window: "1h"
+                resolution: "5s"
+                results:
+                  - symbol: "SOL"
+                    points:
+                      - t: "2025-01-20T12:00:00Z"
+                        price: "100.50"
+                      - t: "2025-01-20T12:00:05Z"
+                        price: "101.00"
+                  - symbol: "BTC"
+                    points:
+                      - t: "2025-01-20T12:00:00Z"
+                        price: "42000.00"
+                  - symbol: "UNKNOWN"
+                    error: "unknown symbol"
+        "400":
+          description: Bad request - invalid parameters or missing symbols
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+              examples:
+                missing_symbols:
+                  summary: No symbols provided
+                  value:
+                    type: invalid_argument
+                    message: "symbols required"
+                    request_id: "01JX2K7WQ4Z8N3RTMV9CE5A0BF"
+                invalid_window:
+                  summary: Invalid window parameter
+                  value:
+                    type: invalid_argument
+                    message: "invalid window parameter"
+                    request_id: "01JX2K7WQ4Z8N3RTMV9CE5A0BF"
+                invalid_resolution:
+                  summary: Invalid resolution parameter
+                  value:
+                    type: invalid_argument
+                    message: "invalid resolution parameter"
+                    request_id: "01JX2K7WQ4Z8N3RTMV9CE5A0BF"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/indicators:
+    get:
+      operationId: getPriceIndicators
+      security: []
+      tags:
+        - Prices
+      summary: Get a technical indicator series
+      description: |
+        Returns one or more technical indicator lines computed from the asset's
+        close prices.
+
+        The requested `window` is widened internally by the indicator's warm-up
+        depth and trimmed back before responding, so the first returned point is
+        already converged rather than carrying seed bias. The window is measured
+        back from the most recent available point, so a feed lagging behind the
+        current time still returns a full window.
+
+        `lines` is keyed by line name. Single-line indicators (`sma`, `ema`,
+        `rsi`, `atr`) return one entry named after the indicator. `macd`
+        returns `macd`, `signal` and `histogram`; `bollinger` returns `upper`,
+        `middle`, `lower` and `percent_b`.
+
+        `atr` reads OHLC candles rather than closes, so it is only available
+        for assets whose price source stores individual ticks; anything else
+        returns `400`. It is Wilder-smoothed and defaults to a period of 14.
+
+        The momentum measures cover fixed spans rather than a caller-supplied
+        `period`, which is rejected for them. `surging_1h`, `surging_4h` and
+        `surging_24h` are the percent price change over that span, so the
+        `resolution` must be coarse enough for the span to fit in 400 buckets —
+        the same bound a supplied `period` carries.
+        `trending_ratio` is average reported 24h volume over the last 6 hours
+        divided by its 30-day average, so it needs a CoinGecko-mapped asset and
+        a `resolution` of at least `1h`.
+
+        VWAP is not offered: it needs per-bucket traded volume, which no price
+        series carries.
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          required: false
+          deprecated: true
+          description: Asset symbol (e.g. SOL, BTC)
+          schema:
+            type: string
+        - name: indicator
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sma, ema, rsi, macd, bollinger, atr, surging_1h, surging_4h, surging_24h, trending_ratio]
+        - name: window
+          in: query
+          description: Time window for the series (e.g. 1d, 7d, 1M)
+          schema:
+            type: string
+            default: 1h
+        - name: resolution
+          in: query
+          description: Candle size the period counts in (e.g. 1m, 1h, 1d)
+          schema:
+            type: string
+            default: 1m
+        - name: period
+          in: query
+          description: |
+            Lookback in candles. Required for sma, ema and rsi; defaults to 20
+            for bollinger and 14 for atr, and is not used by macd. Rejected
+            for the momentum measures, which cover a fixed span.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: fast_period
+          in: query
+          description: MACD fast EMA length. Defaults to 12.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: slow_period
+          in: query
+          description: MACD slow EMA length. Defaults to 26; must exceed fast_period.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: signal_period
+          in: query
+          description: MACD signal EMA length. Defaults to 9.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: std_dev
+          in: query
+          description: Bollinger band width in standard deviations. Defaults to 2.
+          schema:
+            type: number
+            minimum: 0
+        - name: asset_class
+          in: query
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Indicator lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndicatorHistoryResponse"
+        '400':
+          description: Unknown indicator, or a parameter out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        '404':
+          description: Not enough price history to compute the indicator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/range:
+    get:
+      summary: Get min/max price over a window
+      operationId: getPriceRange
+      tags: [Prices]
+      description: |
+        Returns the minimum and maximum price observed for an asset within a
+        configurable lookback window, along with the timestamps at which each
+        extreme occurred. Useful for surfacing 24h highs/lows or computing
+        period-over-period statistics.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch the range for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the symbol in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price range data for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceRangeResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Symbol not found or no price data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/prices/candles:
+    get:
+      summary: Get OHLC candles for a symbol
+      operationId: getCandles
+      tags: [Prices]
+      description: |
+        Returns open/high/low/close buckets for an asset over a configurable
+        lookback window, sampled at a configurable resolution. Use for
+        candlestick charts and volatility measures that need the intra-bucket
+        range rather than a single close.
+
+        Only sources that store individual ticks can produce OHLC. Requesting
+        candles for an asset priced from a derived or snapshot source returns
+        `400`. Hyperliquid perps are stored as mids, so their candles come
+        from Hyperliquid's own trade OHLC instead, at any `resolution` that is
+        a whole number of minutes, hours or days.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch candles for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: as_of
+          in: query
+          description: >-
+            Ends the window at this instant instead of now, so a past period can be read. RFC3339, and not the zero time. A future instant bounds a window that is still filling. Absent reads live data.
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: "2026-01-02T03:04:05Z"
+        - name: resolution
+          in: query
+          description: Candle size (e.g. `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the symbol in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Candle series for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CandleHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters, or candles unavailable for the asset's price source
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Symbol not found or no price data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/market-cap:
+    get:
+      summary: Get market cap by symbol
+      operationId: getMarketCap
+      tags: [Market Cap]
+      description: Returns the latest market capitalization (in USD) for an asset.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch the market cap for (e.g. `BTC`, `ETH`, `SOL`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Market cap data for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketCapResponse"
+              example:
+                symbol: "BTC"
+                market_cap: "1234567890000"
+        "400":
+          description: Bad request - symbol parameter is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No market cap data found for the symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/market-caps:
+    get:
+      summary: List top assets by market cap
+      operationId: listMarketCaps
+      tags: [Market Cap]
+      description: Returns the top assets ranked by market capitalization, in descending order. Use `limit` to control how many entries are returned.
+      security: []
+      parameters:
+        - name: limit
+          in: query
+          description: Maximum number of assets to return. Defaults to `10`; maximum is `50`.
+          required: false
+          schema:
+            type: integer
+            default: 10
+      responses:
+        "200":
+          description: List of assets with market cap data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketCapListResponse"
+              example:
+                assets:
+                  - symbol: "BTC"
+                    market_cap: "1234567890000"
+                  - symbol: "ETH"
+                    market_cap: "500000000000"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/perp/history:
+    get:
+      summary: Get perp funding rate and open interest history
+      operationId: getPerpMarketHistory
+      tags: [Market Feed]
+      description: |
+        Returns a perpetual future's funding rate and open interest over a
+        configurable lookback window, sampled at a configurable resolution.
+        Both series come from the same venue snapshot row, so a caller reading
+        them together never compares values sampled at different times.
+
+        `funding_rate` is the venue's hourly rate as a decimal fraction, so
+        `0.0000125` is 0.00125% per hour. `open_interest` is a coin count of the
+        base asset (`35984.2` for BTC), not a USD notional.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Perp symbol to fetch the snapshot series for (e.g. `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Bucket size (e.g. `5m`, `1h`, `1d`). Must be at least `1h` for windows over `1d`.
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: Funding rate and open interest series for the requested perp
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PerpMarketHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Unknown perp, or no snapshot in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/volume/history:
+    get:
+      summary: Get reported 24h volume history
+      operationId: getVolumeHistory
+      tags: [Market Feed]
+      description: |
+        Returns an asset's reported 24h volume in USD over a configurable
+        lookback window, sampled at a configurable resolution.
+
+        Each point is the rolling 24h figure the data provider reported at that
+        timestamp, not the volume traded inside the bucket. Two adjacent points
+        therefore overlap by almost a full day.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch reported volume for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Bucket size (e.g. `5m`, `1h`, `1d`). Must be at least `1h` for windows over `1d`.
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: Reported 24h volume series for the requested asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VolumeHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Unknown asset, no reported-volume source, or no data in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/scans/history:
+    get:
+      summary: Get a market ranking at every bucket of a window
+      operationId: getScanHistory
+      tags: [Market Feed]
+      description: |
+        Returns the ranking a scanner or a universe rotation is built on, taken
+        at every bucket across a lookback window rather than only at now.
+
+        Every span a ranking measures is read backwards from its own bucket, so
+        no bucket reflects a figure the market had not reported yet. Ranking a
+        month of hourly buckets over the whole tracked universe would be
+        hundreds of thousands of rows, so each bucket carries only its top
+        `per_bucket` assets, ordered best first on the requested `source`.
+        Assets without a symbol or without a spot price source are dropped, the
+        same way the live feeds drop them.
+
+        `value` is the figure the source ranks on: a trending ratio, a recent
+        volume in USD, or a signed price change percentage. Ranking is on that
+        signed figure, so `sort=desc` on a `surging_*` source is the gainers and
+        `sort=asc` is the fallers.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: source
+          in: query
+          description: Which ranking to take.
+          required: true
+          schema:
+            type: string
+            enum: [trending_ratio, volume, surging_1h, surging_4h, surging_24h]
+        - name: sort
+          in: query
+          description: >-
+            Which end of the ranking each bucket keeps. Buckets are capped before they are served, so this must match the sort the caller will rank by: a "biggest dippers" scanner asking for `desc` would be handed the gainers it was never going to buy.
+          required: false
+          schema:
+            type: string
+            enum: [desc, asc]
+            default: desc
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Bucket size (e.g. `5m`, `1h`, `1d`). Must be at least `1h` for windows over `1d`.
+          required: false
+          schema:
+            type: string
+            default: "5s"
+        - name: per_bucket
+          in: query
+          description: How many assets each bucket carries, capped at 200.
+          required: false
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: The ranking at each bucket of the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScanHistoryResponse"
+        "400":
+          description: Bad request - unknown source or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No ranking data in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/market-cap/history:
+    get:
+      summary: Get reported market-cap history
+      operationId: getMarketCapHistory
+      tags: [Market Cap]
+      description: |
+        Returns an asset's reported market capitalisation in USD over a
+        configurable lookback window, sampled at a configurable resolution.
+
+        Each point is the figure the data provider reported at that timestamp.
+        The snapshot is written on the provider's ingest cadence, which is
+        coarser than a minute, so a `resolution` of at least `1h` is what the
+        series can actually fill. Buckets with no snapshot behind them are
+        absent rather than zero.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol to fetch market cap for (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Bucket size (e.g. `5m`, `1h`, `1d`). Must be at least `1h` for windows over `1d`.
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: Reported market-cap series for the requested asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MarketCapHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Unknown symbol, or no market-cap data in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/assets:
+    get:
+      summary: Find an asset by address
+      operationId: listAssets
+      tags: [Assets]
+      description: |
+        Returns the asset at a contract or mint address on every chain it is
+        found on, whether or not True Markets lists it. A Solana mint is looked
+        up on Solana, and an EVM address on Base, Arbitrum and Robinhood Chain,
+        so one address can return several assets. Name a `chain` to look on
+        that chain alone. An address found nowhere returns an empty list.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/AssetAddress"
+        - name: chain
+          in: query
+          description: Only look the address up on this chain.
+          required: false
+          schema:
+            $ref: "#/components/schemas/AssetChain"
+      responses:
+        "200":
+          description: The asset on each chain it was found on
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetListResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Asset data is temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/assets/candles:
+    get:
+      summary: Get OHLC candles for an asset by chain and address
+      operationId: getAssetCandles
+      tags: [Assets]
+      description: |
+        Returns open/high/low/close buckets for any asset, taken from its most
+        liquid pool. Candles come at the finest size at or above `resolution`
+        that keeps the window within 1,000 candles, and daily past that, so the
+        `resolution` in the response can be coarser than the one requested.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: chain
+          in: query
+          description: Chain the asset is on.
+          required: true
+          schema:
+            $ref: "#/components/schemas/AssetChain"
+        - $ref: "#/components/parameters/AssetAddress"
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Smallest candle size wanted (e.g. `1m`, `1h`, `1d`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: Candle series for the asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetCandlesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: No asset at that address on the chain, or no trades in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Asset data is temporarily unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/defi/market/market-data/trending:
+    get:
+      summary: List trending assets
+      operationId: listTrendingAssets
+      tags: [Market Feed]
+      description: >-
+        Assets ranked by trending ratio, the recent traded volume measured against its historical baseline.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/FeedLimit"
+        - $ref: "#/components/parameters/FeedSort"
+      responses:
+        "200":
+          description: Trending assets, ranked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrendingResponse"
+  /v1/defi/market/market-data/surging:
+    get:
+      summary: List surging assets
+      operationId: listSurgingAssets
+      tags: [Market Feed]
+      description: Assets ranked by the size of their 1-hour price move, in either direction.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/FeedLimit"
+        - $ref: "#/components/parameters/FeedSort"
+      responses:
+        "200":
+          description: Surging assets, ranked.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SurgingResponse"
+  /v1/defi/market/stream/bbo:
+    get:
+      summary: Stream BBO quotes
+      operationId: streamBboQuotes
+      tags: [Streams]
+      description: >-
+        Server-sent stream of best bid and offer quotes as each source publishes them, one `bbo` event per update and a comment frame between updates to keep the connection open.
+      security: []
+      responses:
+        "200":
+          description: The quote stream. Held open until the client disconnects.
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "429":
+          description: The per-IP or global concurrent stream limit is already reached.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: The connection cannot be streamed over.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: The quote source is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    head:
+      summary: Probe the BBO stream
+      operationId: probeBboStream
+      tags: [Streams]
+      description: >-
+        Returns the stream's headers with no body, without opening a subscription or counting against the connection limits.
+      security: []
+      responses:
+        "200":
+          description: The stream is reachable.
+  /v1/assets/prices/history:
+    get:
+      summary: Get price history for an asset
+      operationId: getAssetPriceHistory
+      tags: [Prices]
+      description: |
+        Returns historical price points for an asset over a configurable lookback
+        window, sampled at a configurable resolution.
+
+        The same series as `/v1/defi/market/prices/history`, mounted under the
+        asset-oriented path. This mount stores no individual ticks, so candle
+        endpoints and candle-input indicators are unavailable here.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: as_of
+          in: query
+          description: >-
+            Ends the window at this instant instead of now, so a past period can be read. RFC3339, and not the zero time. A future instant bounds a window that is still filling. Absent reads live data.
+          required: false
+          schema:
+            type: string
+            format: date-time
+            example: "2026-01-02T03:04:05Z"
+        - name: resolution
+          in: query
+          description: Gap between consecutive data points (e.g. `5s`, `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the asset in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price history data for the requested asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assets/prices/range:
+    get:
+      summary: Get the min and max price for an asset
+      operationId: getAssetPriceRange
+      tags: [Prices]
+      description: |
+        Returns the lowest and highest price an asset traded at within the
+        window, each with the timestamp it occurred.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the asset in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Price range data for the requested asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceRangeResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Asset not found, or no price data in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/assets/prices/indicators:
+    get:
+      summary: Get technical indicator lines for an asset
+      operationId: getAssetPriceIndicators
+      tags: [Prices]
+      description: |
+        Returns the requested indicator's lines over the window. The series is
+        widened internally by the indicator's own lookback so the first returned
+        point is already warm.
+
+        Candle-input and volume-input indicators are unavailable on this mount:
+        it stores no individual ticks to build candles from, and reads no
+        reported-volume series.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: |
+            Backend asset ID. Mutually exclusive with `symbol`: exactly one of
+            the two is required, and naming both is a 400.
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: symbol
+          in: query
+          description: Asset symbol (e.g. `SOL`, `BTC`).
+          required: false
+          deprecated: true
+          schema:
+            type: string
+        - name: indicator
+          in: query
+          required: true
+          description: Indicator kind to compute.
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Gap between consecutive data points (e.g. `5s`, `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+        - name: asset_class
+          in: query
+          description: Asset class to resolve the asset in. Defaults to `spot`.
+          required: false
+          schema:
+            type: string
+            enum: [spot, perp]
+            default: spot
+      responses:
+        "200":
+          description: Indicator lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndicatorHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Asset not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/cefi/market/prices/history:
+    get:
+      summary: Get CeFi instrument price history
+      operationId: getCefiPriceHistory
+      tags: [CeFi]
+      description: |
+        Returns historical bid/ask midpoint prices for a CeFi instrument
+        over a configurable lookback window, sampled at a configurable
+        resolution. Each price is `(bid + ask) / 2` from the latest EBBO
+        snapshot in the bucket; buckets without both a bid and an ask are
+        excluded.
+
+        The `symbol` parameter is the venue-native instrument symbol (e.g.
+        `BTC-USD`) — there is no registry translation today.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window` and `resolution`.
+      security: []
+      parameters:
+        - name: symbol
+          in: query
+          description: |
+            Venue-native CeFi instrument symbol (e.g. `BTC-USD`). Required here:
+            `asset_id` is rejected with a 400 on the CeFi routes, since CeFi
+            instruments carry no price-source mapping to resolve one against.
+          required: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Gap between consecutive data points (e.g. `5s`, `1m`, `5m`, `1h`).
+          required: false
+          schema:
+            type: string
+            default: "5s"
+      responses:
+        "200":
+          description: CeFi price history data for the requested symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No price data found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/cefi/market/prices/indicators:
+    get:
+      operationId: getCefiPriceIndicators
+      security: []
+      tags: [CeFi]
+      summary: Get a technical indicator series for a CeFi instrument
+      description: |
+        Same parameters, response shape and warm-up behaviour as
+        [`/v1/defi/market/prices/indicators`](/api/market-data/get-price-indicators),
+        computed over bid/ask midpoints rather than close prices.
+
+        The `symbol` parameter is the venue-native instrument symbol (e.g.
+        `BTC-USD`) — there is no registry translation today.
+
+        `atr` and `trending_ratio` are not served here: this mount stores no
+        individual ticks to build candles from, and a venue-native instrument
+        carries no CoinGecko mapping to read reported volume from.
+      parameters:
+        - name: symbol
+          in: query
+          required: true
+          description: |
+            Venue-native CeFi instrument symbol (e.g. `BTC-USD`). Required here:
+            `asset_id` is rejected with a 400 on the CeFi routes, since CeFi
+            instruments carry no price-source mapping to resolve one against.
+          schema:
+            type: string
+        - name: indicator
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [sma, ema, rsi, macd, bollinger, surging_1h, surging_4h, surging_24h]
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          schema:
+            type: string
+            default: "1h"
+        - name: resolution
+          in: query
+          description: Candle size the period counts in (e.g. `5s`, `1m`, `1h`).
+          schema:
+            type: string
+            default: "5s"
+        - name: period
+          in: query
+          description: |
+            Lookback in candles. Required for sma, ema and rsi; defaults to 20
+            for bollinger and is not used by macd. Rejected for the momentum
+            measures, which cover a fixed span.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: fast_period
+          in: query
+          description: MACD fast EMA length. Defaults to 12.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: slow_period
+          in: query
+          description: MACD slow EMA length. Defaults to 26.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: signal_period
+          in: query
+          description: MACD signal EMA length. Defaults to 9.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 400
+        - name: std_dev
+          in: query
+          description: Bollinger band width in standard deviations. Defaults to 2.
+          schema:
+            type: number
+            minimum: 0
+      responses:
+        '200':
+          description: Indicator lines
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndicatorHistoryResponse"
+        '400':
+          description: Unknown indicator, or a parameter out of range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        '404':
+          description: Not enough price history to compute the indicator
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/cefi/market/prices/range:
+    get:
+      summary: Get CeFi min/max price over a window
+      operationId: getCefiPriceRange
+      tags: [CeFi]
+      description: |
+        Returns the minimum and maximum bid/ask midpoint price observed for
+        a CeFi instrument within a configurable lookback window, along with
+        the timestamps at which each extreme occurred.
+
+        See the [Time Window & Resolution](/api/market-data/market-data-service-api#time-window--resolution)
+        section for the format of `window`.
+      security: []
+      parameters:
+        - name: symbol
+          in: query
+          description: |
+            Venue-native CeFi instrument symbol (e.g. `BTC-USD`). Required here:
+            `asset_id` is rejected with a 400 on the CeFi routes, since CeFi
+            instruments carry no price-source mapping to resolve one against.
+          required: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `4h`, `1d`, `7d`, `1M`).
+          required: false
+          schema:
+            type: string
+            default: "1h"
+      responses:
+        "200":
+          description: Price range data for the requested CeFi symbol
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceRangeResponse"
+        "400":
+          description: Bad request - invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: No price data found for the symbol within the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /v1/marketdata/venue-history:
+    get:
+      summary: Get one venue's price or funding series for an asset
+      operationId: getVenueHistory
+      tags: [Venue History]
+      description: |
+        Returns a single venue's series for an asset, one point per `interval`
+        bucket holding the last value seen in it. Buckets with no data are
+        omitted. Points are oldest first. Internal: Envoy does not route this
+        path, so only services inside the network reach it.
+
+        A request is capped at 50,000 buckets: `window` divided by `interval`
+        above that is a 400 (`30d` at `1m` is 43,200 and allowed; `7d` at `5s`
+        is 120,960 and rejected).
+
+        Sources per `venue`, all matched on `asset_id`:
+
+        | venue | metric | source |
+        |---|---|---|
+        | `robinhood`, `base` | `price` | CoinGecko onchain price on that chain; 0x price on that chain when CoinGecko has no row in the window |
+        | `solana` | `price` | Jupiter price |
+        | `hyperliquid` | `price` | Hyperliquid spot mid |
+        | `hyperliquid-perp` | `price` | Hyperliquid perp mid |
+        | `hyperliquid-perp` | `funding` | Hyperliquid hourly funding rate as a decimal fraction |
+        | `cefi` | `price` | CeFi EBBO midpoint, (bid + ask) / 2 |
+      security: []
+      parameters:
+        - name: asset_id
+          in: query
+          description: Backend asset ID.
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: venue
+          in: query
+          description: Venue whose series to read.
+          required: true
+          schema:
+            type: string
+            enum: [robinhood, base, solana, hyperliquid, hyperliquid-perp, cefi]
+        - name: metric
+          in: query
+          description: Series to read. `funding` is served only for `hyperliquid-perp`.
+          required: false
+          schema:
+            type: string
+            enum: [price, funding]
+            default: price
+        - name: window
+          in: query
+          description: Lookback period (e.g. `1h`, `1d`, `7d`), at most `30d` and at most 50,000 intervals.
+          required: true
+          schema:
+            type: string
+        - name: interval
+          in: query
+          description: Bucket size.
+          required: true
+          schema:
+            type: string
+            enum: ["5s", "30s", "1m", "5m", "1h"]
+      responses:
+        "200":
+          description: The venue's series for the asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/VenueHistoryResponse"
+        "400":
+          description: Bad request - invalid parameters, or more than 50,000 buckets
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: The venue has no series for the asset in the window
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+components:
+  parameters:
+    FeedLimit:
+      name: limit
+      in: query
+      description: Assets to return.
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 50
+        default: 10
+    FeedSort:
+      name: sort
+      in: query
+      description: Rank ascending instead of descending.
+      required: false
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+    AssetAddress:
+      name: address
+      in: query
+      description: Asset contract address (EVM) or mint address (Solana).
+      required: true
+      schema:
+        type: string
+        example: "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+  schemas:
+    IndicatorPoint:
+      type: object
+      properties:
+        t:
+          type: string
+          format: date-time
+        value:
+          type: string
+          description: Indicator value at this timestamp
+    IndicatorHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+        window:
+          type: string
+        resolution:
+          type: string
+        indicator:
+          type: string
+        lines:
+          type: object
+          description: Indicator lines keyed by line name
+          additionalProperties:
+            type: array
+            items:
+              $ref: "#/components/schemas/IndicatorPoint"
+    TrendingAsset:
+      type: object
+      properties:
+        symbol:
+          type: string
+        address:
+          type: string
+          description: On-chain token address
+        chain:
+          type: string
+        market_cap:
+          type: string
+        trending_ratio:
+          type: string
+          description: Recent volume over the historical baseline
+        recent_volume:
+          type: string
+        historical_volume:
+          type: string
+    TrendingResponse:
+      type: object
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/TrendingAsset"
+    SurgingAsset:
+      type: object
+      properties:
+        symbol:
+          type: string
+        address:
+          type: string
+          description: On-chain token address
+        chain:
+          type: string
+        price_change_pct_1h:
+          type: string
+        price_change_pct_4h:
+          type: string
+        price_change_pct_24h:
+          type: string
+        price_1h_ago:
+          type: string
+        price_4h_ago:
+          type: string
+        price_24h_ago:
+          type: string
+        current_price:
+          type: string
+    SurgingResponse:
+      type: object
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/SurgingAsset"
+    Error:
+      type: object
+      description: Shared API error envelope
+      required:
+        - type
+        - message
+        - request_id
+      properties:
+        type:
+          type: string
+          description: Closed error category fixing the HTTP status
+          enum:
+            - invalid_argument
+            - unauthenticated
+            - permission_denied
+            - not_found
+            - method_not_allowed
+            - conflict
+            - failed_precondition
+            - resource_exhausted
+            - unavailable
+            - internal
+        code:
+          type: string
+          description: >-
+            Specific error condition from the fleet code registry. Extensible: clients MUST tolerate any value and fall back to type-based handling. No operation here emits one today.
+        message:
+          type: string
+          description: Human-readable error message
+        metadata:
+          type: object
+          description: >-
+            Machine-readable context scoped to `code`; values are always strings. Which keys appear is determined by `code`.
+          additionalProperties:
+            type: string
+        field_violations:
+          type: array
+          description: >-
+            Per-field rejections, present on `invalid_argument` when the request failed field validation.
+          items:
+            type: object
+            required:
+              - field
+              - message
+            properties:
+              field:
+                type: string
+                description: Dotted path to the offending field, as the client sent it
+              message:
+                type: string
+                description: Human-readable reason the field was rejected
+        request_id:
+          type: string
+          description: Per-request correlation ID, empty when unavailable
+    MarketCapResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID
+        symbol:
+          type: string
+          description: The asset symbol
+        market_cap:
+          type: string
+          description: Market capitalization in USD (as string to preserve precision)
+    MarketCapListResponse:
+      type: object
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/MarketCapResponse"
+          description: List of assets with market cap, sorted by market cap descending
+    PriceResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID, present when the request named one
+        symbol:
+          type: string
+          description: The asset symbol
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/Candle"
+          description: List of price candles for different time intervals
+    Candle:
+      type: object
+      properties:
+        interval:
+          type: string
+          description: Time interval for the candle (e.g., 1h, 4h, 24h)
+        openPrice:
+          type: string
+          description: Opening price for the interval
+        closePrice:
+          type: string
+          description: Closing price for the interval
+        highPrice:
+          type: string
+          description: Highest price during the interval
+        lowPrice:
+          type: string
+          description: Lowest price during the interval
+    PricePointResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+          description: The asset symbol
+        timestamp:
+          type: integer
+          format: int64
+          description: Unix timestamp of the actual data point returned
+        price:
+          type: string
+          description: Price at the returned timestamp
+    PriceRangeResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+          description: The asset symbol
+        window:
+          type: string
+          description: The time window used for the query
+        min_price:
+          type: string
+          description: Minimum price within the window
+        max_price:
+          type: string
+          description: Maximum price within the window
+        min_timestamp:
+          type: string
+          description: ISO 8601 timestamp when the minimum price occurred
+        max_timestamp:
+          type: string
+          description: ISO 8601 timestamp when the maximum price occurred
+    PerpMarketHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID of the perp
+        symbol:
+          type: string
+          description: The perp symbol
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/PerpMarketPoint"
+          description: Funding rate and open interest buckets, oldest first
+    PerpMarketPoint:
+      type: object
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the bucket
+        funding_rate:
+          type: string
+          description: Hourly funding rate as a decimal fraction (0.0000125 is 0.00125% per hour)
+        open_interest:
+          type: string
+          description: Open interest as a coin count of the base asset, not a USD notional
+    VolumeHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID
+        symbol:
+          type: string
+          description: The asset symbol
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/VolumePoint"
+          description: Reported 24h volume buckets, oldest first
+    VolumePoint:
+      type: object
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the bucket
+        volume:
+          type: string
+          description: Reported rolling 24h volume in USD at this timestamp
+    ScanCandidate:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID
+        symbol:
+          type: string
+          description: The asset symbol
+        value:
+          type: string
+          description: The figure the source ranks on, signed for a price change
+    ScanBucket:
+      type: object
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the bucket
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanCandidate"
+          description: The bucket's top assets, best first
+    ScanHistoryResponse:
+      type: object
+      properties:
+        source:
+          type: string
+          description: The ranking that was taken
+        sort:
+          type: string
+          description: Which end of the ranking each bucket kept
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        per_bucket:
+          type: integer
+          description: The most assets any bucket carries
+        buckets:
+          type: array
+          items:
+            $ref: "#/components/schemas/ScanBucket"
+          description: One ranking per bucket, oldest first
+    VenueHistoryResponse:
+      type: object
+      required: [asset_id, venue, metric, interval, points]
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID
+        venue:
+          type: string
+          description: The venue the series was read from
+        metric:
+          type: string
+          description: The series read, `price` or `funding`
+        interval:
+          type: string
+          description: The bucket size
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/VenuePoint"
+          description: One point per bucket with data, oldest first
+    VenuePoint:
+      type: object
+      required: [t, v]
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: RFC 3339 start of the bucket
+        v:
+          type: string
+          description: Last value in the bucket as a decimal string
+    MarketCapHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID
+        symbol:
+          type: string
+          description: The asset symbol
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/MarketCapPoint"
+          description: Reported market-cap buckets, oldest first
+    MarketCapPoint:
+      type: object
+      properties:
+        t:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp of the bucket
+        market_cap:
+          type: string
+          description: Reported market capitalisation in USD at this timestamp
+    PriceHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+          description: The asset symbol
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+          description: List of price points
+    Point:
+      type: object
+      properties:
+        t:
+          type: string
+          description: ISO 8601 timestamp for the price point
+        price:
+          type: string
+          description: Price at this timestamp
+    CandleHistoryResponse:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+          description: The asset symbol
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The candle size used for the query
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandleBucket"
+          description: List of OHLC buckets, oldest first
+    AssetChain:
+      type: string
+      enum: [solana, base, arbitrum, robinhood]
+      description: A chain asset lookups cover
+    Asset:
+      type: object
+      description: An asset's on-chain market on one chain, priced from its DEX pools.
+      required:
+        - chain
+        - address
+        - name
+        - symbol
+        - decimals
+        - price_usd
+        - fdv_usd
+        - market_cap_usd
+        - total_reserve_in_usd
+        - volume_usd_24h
+      properties:
+        chain:
+          $ref: "#/components/schemas/AssetChain"
+        address:
+          type: string
+          description: Asset address, lowercased for EVM chains
+        name:
+          type: string
+        symbol:
+          type: string
+        decimals:
+          type: integer
+        image_url:
+          type: string
+          description: Asset icon. Absent when the asset has none.
+        price_usd:
+          type: [string, "null"]
+          description: USD price, null when the asset cannot be priced
+        fdv_usd:
+          type: [string, "null"]
+          description: Fully diluted valuation in USD, null when it cannot be computed
+        market_cap_usd:
+          type: [string, "null"]
+          description: Market capitalization in USD, null when it cannot be computed or the asset is unverified
+        total_reserve_in_usd:
+          type: string
+          description: USD liquidity of the asset across its pools
+        volume_usd_24h:
+          type: string
+          description: USD volume traded over the last 24 hours
+    AssetListResponse:
+      type: object
+      required: [assets]
+      properties:
+        assets:
+          type: array
+          items:
+            $ref: "#/components/schemas/Asset"
+          description: The asset on each chain it was found on
+    AssetCandlesResponse:
+      type: object
+      required: [chain, address, window, resolution, candles]
+      properties:
+        chain:
+          $ref: "#/components/schemas/AssetChain"
+        address:
+          type: string
+          description: Asset address, lowercased for EVM chains
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The candle size served, which can be coarser than the one requested
+        candles:
+          type: array
+          items:
+            $ref: "#/components/schemas/CandleBucket"
+          description: List of OHLC buckets, oldest first
+    CandleBucket:
+      type: object
+      properties:
+        t:
+          type: string
+          description: ISO 8601 timestamp of the bucket start
+        open:
+          type: string
+          description: First price in the bucket
+        high:
+          type: string
+          description: Highest price in the bucket
+        low:
+          type: string
+          description: Lowest price in the bucket
+        close:
+          type: string
+          description: Last price in the bucket
+        volume:
+          type: string
+          description: Base-asset quantity traded in the bucket. Omitted for a price source that reports no trade sizes.
+    BatchPriceHistoryResponse:
+      type: object
+      properties:
+        window:
+          type: string
+          description: The time window used for the query
+        resolution:
+          type: string
+          description: The time resolution used for the query
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/BatchPriceHistoryResult"
+          description: Per-symbol results
+    BatchPriceHistoryResult:
+      type: object
+      properties:
+        asset_id:
+          type: string
+          format: uuid
+          description: Backend asset ID. Absent on the CeFi routes.
+        symbol:
+          type: string
+          description: The asset symbol
+        points:
+          type: array
+          items:
+            $ref: "#/components/schemas/Point"
+          description: Price points (omitted if error)
+        error:
+          type: string
+          description: Error message if the symbol could not be resolved (omitted on success)
