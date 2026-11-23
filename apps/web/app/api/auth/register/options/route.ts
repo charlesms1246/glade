@@ -2,12 +2,15 @@ import { generateRegistrationOptions } from "@simplewebauthn/server";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { fail, json } from "@/lib/server/api";
+import { signupLimited } from "@/lib/server/signup-limit";
 import { putChallenge, rp } from "@/lib/server/webauthn";
 import { readJson } from "@/lib/server/body";
 
 const body = z.object({ name: z.string().trim().min(1).max(40) });
 
 export async function POST(req: Request) {
+  const limited = signupLimited("options", req);
+  if (limited) return limited;
   const parsed = body.safeParse(await readJson(req));
   if (!parsed.success) return fail(400, "Choose a name of 1–40 characters.");
   const uid = randomUUID();
