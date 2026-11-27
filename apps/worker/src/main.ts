@@ -8,6 +8,7 @@ import pino from "pino";
 import { createBellService } from "./bell/service";
 import { BELL_WATCHLIST, loadBellSigma, TICK_MS } from "./config";
 import { bellRepo, logDecision, publish } from "./db/repos";
+import { loadHeldBellSymbols } from "./bell/watchlist";
 import { acquireLeaderLock, watchLeaderLock, type LockSql } from "./leader";
 import { PriceCache } from "./market/price-cache";
 import { MarketStream } from "./market/stream";
@@ -59,12 +60,30 @@ const spotSymbols = (
     .where(and(eq(reg.env, env.TM_ENV), eq(reg.type, "spot"), eq(reg.assetClass, "stock")))
 ).map((r) => r.symbol);
 if (spotSymbols.length === 0) log.warn("asset_registry is empty; run `pnpm seed:assets`");
-const spotRef = new Map(BELL_WATCHLIST.map((s) => [s, referenceSpotSymbol(s, spotSymbols) ?? s]));
+const watchlist = [...BELL_WATCHLIST];
+const spotRef = new Map(watchlist.map((s) => [s, referenceSpotSymbol(s, spotSymbols) ?? s]));
 
 const cache = new PriceCache();
 const stream = new MarketStream({ url: urls.ws, cache, tm, log: (ev, f) => log.info(f, ev) });
-stream.watch(BELL_WATCHLIST.flatMap((symbol) => [{ symbol: spotRef.get(symbol)!, cls: "spot" as const }, { symbol, cls: "perp" as const }]));
+const watchInstruments = (symbols: string[]) =>
+  symbols.flatMap((symbol) => [{ symbol: spotRef.get(symbol)!, cls: "spot" as const }, { symbol, cls: "perp" as const }]);
+stream.watch(watchInstruments(watchlist));
 stream.start();
+
+// Symbols users actually hold join the static watchlist, so Bell estimates cover them too.
+async function refreshWatchlist() {
+  try {
+    const added = (await loadHeldBellSymbols(db, env.TM_ENV)).filter((s) => !watchlist.includes(s));
+    for (const s of added) spotRef.set(s, referenceSpotSymbol(s, spotSymbols) ?? s);
+    watchlist.push(...added);
+    stream.watch(watchInstruments(added));
+    if (added.length) log.info({ added }, "bell_watchlist_extended");
+  } catch (e) {
+    log.warn({ error: String(e).slice(0, 200) }, "bell_watchlist_refresh_failed");
+  }
+}
+await refreshWatchlist();
+const watchTimer = setInterval(refreshWatchlist, 5 * 60_000);
 
 const sigma = loadBellSigma(new URL("../../../docs/evidence/bell-calibration-NVDA.json", import.meta.url).pathname);
 const bell = createBellService({
@@ -85,7 +104,7 @@ async function tick() {
   const now = new Date();
   try {
     await stream.refreshStale();
-    const b = await bell.tick(BELL_WATCHLIST, now);
+    const b = await bell.tick(watchlist, now);
     for (const symbol of b.snapshotsTaken) {
       await logDecision(db, {
         userId: null,
@@ -114,6 +133,7 @@ log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(
 
 async function shutdown() {
   clearInterval(timer);
+  clearInterval(watchTimer);
   stopTrading();
   stopLockWatch();
   stream.stop();
