@@ -4,6 +4,8 @@ import { computeHedgeReport, explainReport, type Fill, type HedgeReport, type Sn
 
 /** Minutes after the open at which the realised open price is read (matches the Bell unwind). */
 export const OPEN_READ_MIN = 5;
+/** A hedge that still cannot be reported this long after the open is given up on. */
+export const GIVE_UP_AFTER_MS = 24 * 60 * 60_000;
 
 export interface PendingBellHedge {
   hedgeId: string;
@@ -71,6 +73,16 @@ export async function runBellReportJob(deps: BellReportJobDeps, now: Date): Prom
   const reported: string[] = [];
   const waiting: string[] = [];
   for (const h of await deps.pending()) {
+    const giveUp = async (reason: string) => {
+      if (now.getTime() < h.openAt.getTime() + GIVE_UP_AFTER_MS) return false;
+      await deps.logDecision(h.userId, {
+        action: "bell_report_unavailable",
+        explanation: "No Bell report for this hedge: the post-open price or the pre-close snapshot was not available within 24 hours.",
+        inputs: { hedgeId: h.hedgeId, sessionId: h.sessionId, reason },
+        outputs: {},
+      });
+      return true;
+    };
     try {
       const readAt = new Date(h.openAt.getTime() + OPEN_READ_MIN * 60_000);
       if (now < readAt) {
@@ -92,7 +104,7 @@ export async function runBellReportJob(deps: BellReportJobDeps, now: Date): Prom
       const r = computeHedgeReport({ plan: h.plan, fills: h.fills, snapshots, openPx, fundingReceived });
       if (typeof r === "string") {
         deps.log?.("bell_report_waiting", { hedgeId: h.hedgeId, reason: r });
-        waiting.push(h.hedgeId);
+        if (!(await giveUp(r))) waiting.push(h.hedgeId);
         continue;
       }
       const out = outputs(r);
@@ -115,6 +127,7 @@ export async function runBellReportJob(deps: BellReportJobDeps, now: Date): Prom
       reported.push(h.hedgeId);
     } catch (e) {
       deps.log?.("bell_report_failed", { hedgeId: h.hedgeId, error: String(e).slice(0, 300) });
+      await giveUp(`error: ${String(e).slice(0, 200)}`).catch(() => undefined);
     }
   }
   return { reported, waiting };

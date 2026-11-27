@@ -1,6 +1,6 @@
 import type { ClosureKind } from "@glade/calendar";
 import { schema, type Db } from "@glade/db";
-import { and, asc, eq, gte, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Fill, Snapshot } from "./compute";
 import type { BellReportJobDeps, BellReportRow, PendingBellHedge } from "./job";
 
@@ -27,18 +27,30 @@ export async function pendingBellHedges(db: Db, limit = 50): Promise<PendingBell
       ),
     )
     .leftJoin(bellReports, and(eq(bellReports.userId, hedges.userId), eq(bellReports.sessionId, bellSessions.id)))
-    .where(and(eq(hedges.mode, "bell"), eq(hedges.status, "closed"), isNull(bellReports.id)))
+    .where(
+      and(
+        eq(hedges.mode, "bell"),
+        eq(hedges.status, "closed"),
+        isNull(bellReports.id),
+        // Hedges the job gave up on are not retried.
+        sql`not exists (select 1 from decisions d where d.action = 'bell_report_unavailable' and d.inputs->>'hedgeId' = ${hedges.id}::text)`,
+      ),
+    )
     .orderBy(asc(hedges.closedAt))
     .limit(limit);
 
+  const ready = rows.filter((r) => r.openedAt && r.closedAt);
+  const allFills =
+    ready.length === 0
+      ? []
+      : await db
+          .select({ hedgeId: intents.hedgeId, assetId: intents.assetId, kind: intents.kind, inputs: intents.inputs, qty: orders.executedQty, px: orders.avgPrice, fee: orders.fee })
+          .from(orders)
+          .innerJoin(intents, eq(intents.id, orders.intentId))
+          .where(and(inArray(intents.hedgeId, ready.map((r) => r.hedgeId)), eq(orders.status, "complete")));
   const out: PendingBellHedge[] = [];
-  for (const r of rows) {
-    if (!r.openedAt || !r.closedAt) continue;
-    const fillRows = await db
-      .select({ assetId: intents.assetId, kind: intents.kind, inputs: intents.inputs, qty: orders.executedQty, px: orders.avgPrice, fee: orders.fee })
-      .from(orders)
-      .innerJoin(intents, eq(intents.id, orders.intentId))
-      .where(and(eq(intents.hedgeId, r.hedgeId), eq(orders.status, "complete")));
+  for (const r of ready) {
+    const fillRows = allFills.filter((f) => f.hedgeId === r.hedgeId);
     const fills: Fill[] = fillRows
       .filter((f) => f.qty !== null && f.px !== null && (f.kind === "open" || f.kind === "close"))
       .map((f) => ({ assetId: f.assetId, kind: f.kind as "open" | "close", executedQty: f.qty!, avgPrice: f.px!, fee: f.fee ?? "0" }));
@@ -49,8 +61,8 @@ export async function pendingBellHedges(db: Db, limit = 50): Promise<PendingBell
       sessionId: r.sessionId,
       sessionKind: r.sessionKind as ClosureKind,
       openAt: r.openAt,
-      openedAt: r.openedAt,
-      closedAt: r.closedAt,
+      openedAt: r.openedAt!,
+      closedAt: r.closedAt!,
       plan,
       fills,
     });

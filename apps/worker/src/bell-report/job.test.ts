@@ -73,3 +73,18 @@ describe("Bell report job", () => {
     expect(logs).toEqual(["bell_report_failed"]);
   });
 });
+
+describe("Bell report give-up", () => {
+  const noSnap = () => deps({ snapshots: async () => [] });
+  it("keeps waiting within 24 hours of the open", async () => {
+    const h = noSnap();
+    expect(await runBellReportJob(h.d, new Date("2026-11-25T14:00:00Z"))).toEqual({ reported: [], waiting: ["h1"] });
+    expect(h.decisions).toEqual([]);
+  });
+  it("records bell_report_unavailable after 24 hours and stops waiting", async () => {
+    const calls: string[] = [];
+    const h = deps({ snapshots: async () => [], logDecision: async (_u, x) => void calls.push(x.action) });
+    expect(await runBellReportJob(h.d, new Date("2026-11-25T14:31:00Z"))).toEqual({ reported: [], waiting: [] });
+    expect(calls).toEqual(["bell_report_unavailable"]);
+  });
+});
