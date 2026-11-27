@@ -231,6 +231,7 @@ export function startTrading(d: TradingDeps): () => void {
   };
 
   const paused = () => env.GLADE_PAUSE_ALL;
+  if (paused()) log.warn("GLADE_PAUSE_ALL is set: no intents, Floor trades or Bell unwinds will run");
   const atRiskLoggedAt = new Map<string, number>();
   const timers = [
     every(
