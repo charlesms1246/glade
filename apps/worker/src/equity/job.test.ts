@@ -93,3 +93,11 @@ describe("equity snapshot job", () => {
     expect(bucketStart(new Date("2026-11-24T15:15:00Z")).toISOString()).toBe("2026-11-24T15:15:00.000Z");
   });
 });
+
+describe("equity job work list", () => {
+  it("asks for users missing the current bucket", async () => {
+    const asked: Date[] = [];
+    await runEquityJob({ users: async (at) => (asked.push(at), []), portfolio: async () => ({}) as never, floorTerms: async () => null, save: async () => {} }, new Date("2026-11-24T15:07:00Z"));
+    expect(asked[0]!.toISOString()).toBe("2026-11-24T15:00:00.000Z");
+  });
+});

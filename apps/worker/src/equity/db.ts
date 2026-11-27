@@ -1,9 +1,8 @@
 import { schema, type Db } from "@glade/db";
-import { paperAccountUsers } from "@glade/paper";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import type { EquityJobDeps, FloorTerms } from "./job";
 
-const { floorState, mandates, paperEquitySnapshots } = schema;
+const { floorState, mandates, paperAccounts, paperEquitySnapshots } = schema;
 
 export async function activeFloorTerms(db: Db, userId: string): Promise<FloorTerms | null> {
   const [m] = await db
@@ -20,7 +19,14 @@ export async function activeFloorTerms(db: Db, userId: string): Promise<FloorTer
 /** The database half of EquityJobDeps; the caller adds `portfolio` (paper venue) and `log`. */
 export function equityDb(db: Db): Pick<EquityJobDeps, "users" | "floorTerms" | "save"> {
   return {
-    users: () => paperAccountUsers(db),
+    users: async (at) =>
+      (
+        await db
+          .select({ id: paperAccounts.userId })
+          .from(paperAccounts)
+          .leftJoin(paperEquitySnapshots, and(eq(paperEquitySnapshots.userId, paperAccounts.userId), eq(paperEquitySnapshots.at, at)))
+          .where(isNull(paperEquitySnapshots.userId))
+      ).map((r) => r.id),
     floorTerms: (u) => activeFloorTerms(db, u),
     save: async (s) => {
       await db.insert(paperEquitySnapshots).values(s).onConflictDoNothing();

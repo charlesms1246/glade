@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { explainResult, runPendingIntents, type ClaimedIntent } from "./intent-runner";
+import { explainResult, runIntentsUntilEmpty, runPendingIntents, type ClaimedIntent } from "./intent-runner";
 
 const intent = (id: string): ClaimedIntent => ({
   id,
@@ -57,5 +57,22 @@ describe("explainResult formatting", () => {
     const i = { ...intent("a"), qty: "3.629000000000000000" };
     const row = { intentId: "a", attempt: 1, tmOrderId: "o", status: "complete" as const, avgPrice: "165.165000", fee: "0.26972270325" };
     expect(explainResult(i, { outcome: "complete", tmOrderId: "o", row })).toBe("Filled: open sell 3.629 at 165.165, fee 0.2697. Shield 75% of NVDA.");
+  });
+});
+
+describe("runIntentsUntilEmpty", () => {
+  it("drains the queue one at a time and stops at the cap", async () => {
+    const mk = (id: string) => ({ id, userId: "u", kind: "open", assetId: "p", side: "sell", qty: "1", qtyUnit: "base", leverage: null, reduceOnly: false, planHash: null, inputs: {}, hedgeId: null, reason: "" }) as unknown as ClaimedIntent;
+    const queue = ["a", "b", "c"].map(mk);
+    const sizes: number[] = [];
+    const deps = {
+      claim: async (n: number) => (sizes.push(n), queue.splice(0, n)),
+      execute: async () => ({ outcome: "failed" as const, reason: "x" }),
+      onResult: async () => {},
+    };
+    expect(await runIntentsUntilEmpty(deps, 20)).toHaveLength(3);
+    expect(sizes.every((n) => n === 1)).toBe(true);
+    queue.push(...["d", "e", "f"].map(mk));
+    expect(await runIntentsUntilEmpty(deps, 2)).toHaveLength(2);
   });
 });

@@ -33,6 +33,17 @@ export async function runPendingIntents(deps: IntentRunnerDeps, limit = 10): Pro
   return results;
 }
 
+/** Drains the pending queue within one tick, still one intent at a time, up to `cap` intents. */
+export async function runIntentsUntilEmpty(deps: IntentRunnerDeps, cap = 20): Promise<ExecResult[]> {
+  const results: ExecResult[] = [];
+  while (results.length < cap) {
+    const done = await runPendingIntents(deps, 1);
+    if (done.length === 0) break;
+    results.push(...done);
+  }
+  return results;
+}
+
 /** One plain-English line for the activity log. */
 export function explainResult(i: ClaimedIntent, r: ExecResult): string {
   const num = (v: string, dp: number) => dec(v).toDecimalPlaces(dp).toString();

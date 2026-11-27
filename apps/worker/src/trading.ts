@@ -15,7 +15,7 @@ import { createExecutor } from "./executor";
 import { bellReportDb } from "./bell-report/db";
 import { runBellReportJob } from "./bell-report/job";
 import { runBellUnwind } from "./jobs/bell-unwind";
-import { runPendingIntents, type ClaimedIntent } from "./jobs/intent-runner";
+import { runIntentsUntilEmpty, runPendingIntents, type ClaimedIntent } from "./jobs/intent-runner";
 import { runOnboardingJob } from "./jobs/onboarding-job";
 import { runFloorJob } from "./floor/job";
 import { equityDb } from "./equity/db";
@@ -31,6 +31,7 @@ import { groupExposure } from "./policy/exposure";
 export const PAPER_START_USD = "10000";
 const PRICE_MAX_AGE_MS = 60_000;
 const PERP_SIZE_STEP = "0.001";
+const PERPS_CACHE_MS = 30_000;
 const STALE_INTENT_MS = 3 * 60_000;
 const GATEWAY_BACKOFF_MS = 60 * 60_000;
 const MAX_PAPER_ACCOUNTS_PER_DAY = 200;
@@ -77,12 +78,18 @@ export function startTrading(d: TradingDeps): () => void {
     return p.balances.filter((b) => !b.stable).reduce((a, b) => a.plus(dec(b.value ?? "0")), new Decimal(0)).toString();
   };
 
-  const perpsList = async () => {
+  // The perp list changes rarely; a short cache avoids one query per user per Floor tick.
+  let perpsCache: { at: number; rows: Awaited<ReturnType<typeof loadPerps>> } | undefined;
+  const loadPerps = async () => {
     const r = schema.assetRegistry;
     return db
       .select({ asset_id: r.assetId, symbol: r.symbol, max_leverage: r.maxLeverage })
       .from(r)
       .where(and(eq(r.env, env.TM_ENV), eq(r.type, "perp")));
+  };
+  const perpsList = async () => {
+    if (!perpsCache || Date.now() - perpsCache.at > PERPS_CACHE_MS) perpsCache = { at: Date.now(), rows: await loadPerps() };
+    return perpsCache.rows;
   };
 
   // Cap for a new short: that stock's holdings against the short already open on its perp.
@@ -219,7 +226,7 @@ export function startTrading(d: TradingDeps): () => void {
       async () => {
         if (paused()) return;
         // One at a time, so no claimed intent waits long enough to look stale to the reconciler.
-        const done = await runPendingIntents(runnerDeps((n) => claimIntents(db, n)), 1);
+        const done = await runIntentsUntilEmpty(runnerDeps((n) => claimIntents(db, n)));
         if (done.length) log.info({ results: done.map((r) => r.outcome) }, "intents_run");
       },
       "execution",

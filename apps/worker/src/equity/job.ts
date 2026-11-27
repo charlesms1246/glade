@@ -22,7 +22,8 @@ export interface EquitySnapshot {
 }
 
 export interface EquityJobDeps {
-  users: () => Promise<string[]>;
+  /** Users still missing a snapshot for the bucket starting at `at`. */
+  users: (at: Date) => Promise<string[]>;
   portfolio: (userId: string) => Promise<Portfolio>;
   /** Null when the user has no active mandate. */
   floorTerms: (userId: string) => Promise<FloorTerms | null>;
@@ -61,7 +62,7 @@ export async function runEquityJob(deps: EquityJobDeps, now: Date): Promise<{ sa
   const at = bucketStart(now);
   const saved: string[] = [];
   const failed: string[] = [];
-  for (const userId of await deps.users()) {
+  for (const userId of await deps.users(at)) {
     try {
       const [p, terms] = await Promise.all([deps.portfolio(userId), deps.floorTerms(userId)]);
       await deps.save(snapshotOf(userId, at, p, terms));
