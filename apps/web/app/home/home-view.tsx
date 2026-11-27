@@ -50,7 +50,7 @@ export function HomeView() {
         ))}
       </section>
 
-      {!notFunded && (
+      {!notFunded && (hasStocks || pf.positions.length > 0) && (
         <section className="rounded-2xl border border-sand-deep bg-white/70 p-7">
           <div className="flex items-baseline justify-between">
             <h2 className="font-display text-2xl text-forest-deep">Equity</h2>

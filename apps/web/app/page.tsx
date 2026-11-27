@@ -11,7 +11,7 @@ const modes = [
   {
     name: "Floor",
     line: "Choose a target, and Glade keeps the hedge on it.",
-    body: "You sign a mandate once. Glade raises the hedge as your cushion shrinks and lowers it as you recover. It can only open or trim a short, never buy, sell or move your funds.",
+    body: "You sign a mandate once. Glade raises the hedge as your cushion shrinks and lowers it as you recover. It can only open or trim a short; it never trades your stock or moves your funds.",
   },
   {
     name: "Bell",
@@ -28,14 +28,17 @@ export default function Home() {
           <LiveStatus />
         </Suspense>
         <h1 className="mt-8 max-w-3xl font-display text-5xl leading-[1.05] tracking-tight text-forest-deep sm:text-6xl">
-          Never lose more than you choose, even when Wall Street sleeps.
+          Set the most you are willing to lose, even when Wall Street sleeps.
         </h1>
         <p className="mt-6 max-w-2xl text-lg leading-relaxed text-ink-soft">
           Glade protects tokenized US stocks with perpetual futures on True Markets. Hedge in one tap, set a loss target
-          that holds itself, and see the opening gap while the market is closed.
+          that Glade works to keep (a target, not a guarantee), and see the opening gap while the market is closed.
         </p>
         <div className="mt-10 flex flex-wrap gap-3">
-          <Link href="/bell" className="rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep">
+          <Link href="/login" className="rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep">
+            Try it on paper
+          </Link>
+          <Link href="/bell" className="rounded-full border border-forest/30 px-6 py-3 text-sm font-medium text-forest hover:bg-sand">
             See the live Bell estimate
           </Link>
           <Link href="/replay" className="rounded-full border border-forest/30 px-6 py-3 text-sm font-medium text-forest hover:bg-sand">

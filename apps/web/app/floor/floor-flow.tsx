@@ -17,7 +17,7 @@ function summary(t: { floorPct: string; leverageMax: string; ratchet: boolean; m
   const target = t.ratchet
     ? `${pct(t.floorPct)} of your highest equity since signing (starting from ${usd(t.baseUsd)})`
     : `${pct(t.floorPct)} of ${usd(t.baseUsd)}`;
-  return `Glade may open or trim a short hedge on the ${list(perps)} perp${perps.length > 1 ? "s" : ""}, up to ${t.leverageMax}× leverage and at most ${t.maxTradesDay} trades a day, aiming to keep your equity above a target of ${target}. It can never buy or sell your stock, open a long position, or move funds.`;
+  return `Glade may open or trim a short hedge on the ${list(perps)} perp${perps.length > 1 ? "s" : ""}, up to ${t.leverageMax}× leverage and at most ${t.maxTradesDay} trades a day, aiming to keep your equity above a target of ${target}. It never trades your stock, opens a long position, or moves funds.`;
 }
 
 function RiskMeter({ v }: { v: FloorView }) {
@@ -66,7 +66,7 @@ export function FloorFlow() {
   const [floorPct, setFloorPct] = useState(85);
   const [multiplier, setMultiplier] = useState(4);
   const [ratchet, setRatchet] = useState(true);
-  const [leverage, setLeverage] = useState(3);
+  const [leverage, setLeverage] = useState(2);
   const [offer, setOffer] = useState<Offer | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,7 +145,10 @@ export function FloorFlow() {
                 Pause
               </button>
             )}
-            <button onClick={() => void setStatus("revoke")} disabled={busy} className="rounded-full border border-rose/40 px-5 py-2.5 text-sm font-medium text-rose hover:bg-rose/10 disabled:opacity-50">
+            <button
+              onClick={() => {
+                if (window.confirm("Revoke this mandate? Glade will stop managing your hedge. Open hedges stay until you unshield.")) void setStatus("revoke");
+              }} disabled={busy} className="rounded-full border border-rose/40 px-5 py-2.5 text-sm font-medium text-rose hover:bg-rose/10 disabled:opacity-50">
               Revoke
             </button>
             {!editing && (
@@ -194,10 +197,10 @@ export function FloorFlow() {
             <div>
               <p className="font-medium">Ratchet</p>
               <div className="mt-2 flex gap-2">
-                <button onClick={() => (setRatchet(true), setOffer(null))} className={mark(ratchet)}>
+                <button aria-pressed={ratchet} onClick={() => (setRatchet(true), setOffer(null))} className={mark(ratchet)}>
                   On
                 </button>
-                <button onClick={() => (setRatchet(false), setOffer(null))} className={mark(!ratchet)}>
+                <button aria-pressed={!ratchet} onClick={() => (setRatchet(false), setOffer(null))} className={mark(!ratchet)}>
                   Off
                 </button>
               </div>
@@ -207,7 +210,7 @@ export function FloorFlow() {
               <p className="font-medium">Leverage cap</p>
               <div className="mt-2 flex gap-2">
                 {[1, 2, 3].map((l) => (
-                  <button key={l} onClick={() => (setLeverage(l), setOffer(null))} className={mark(leverage === l)}>
+                  <button key={l} aria-pressed={leverage === l} onClick={() => (setLeverage(l), setOffer(null))} className={mark(leverage === l)}>
                     {l}×
                   </button>
                 ))}
