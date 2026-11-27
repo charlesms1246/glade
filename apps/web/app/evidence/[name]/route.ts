@@ -13,5 +13,5 @@ const EVIDENCE: Record<string, unknown> = {
 /** The evidence files produced from live public market data, served as JSON. */
 export async function GET(_req: Request, ctx: RouteContext<"/evidence/[name]">) {
   const data = EVIDENCE[(await ctx.params).name];
-  return data ? Response.json(data) : Response.json({ error: "not found" }, { status: 404 });
+  return data ? Response.json(data, { headers: { "Cache-Control": "public, max-age=86400, s-maxage=604800, stale-while-revalidate=86400" } }) : Response.json({ error: "not found" }, { status: 404 });
 }

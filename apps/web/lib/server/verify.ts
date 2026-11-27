@@ -1,6 +1,7 @@
 import "server-only";
 import { schema } from "@glade/db";
 import { and, count, desc, eq, sql } from "drizzle-orm";
+import { cacheLife } from "next/cache";
 import { db, tmEnv } from "./db";
 
 export interface PaperFill {
@@ -27,6 +28,8 @@ const MODE = { shield: "Shield", floor: "Floor", bell: "Bell" } as const;
 
 /** Aggregate, identifier-free activity for the public verification page. */
 export async function verifyStats(): Promise<VerifyStats> {
+  "use cache";
+  cacheLife("minutes");
   const o = schema.orders;
   const i = schema.intents;
   const a = schema.assetRegistry;

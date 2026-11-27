@@ -1,6 +1,7 @@
 import "server-only";
 import type { ClosureKind } from "@glade/calendar";
 import { sql } from "drizzle-orm";
+import { cacheLife } from "next/cache";
 import { bandFor } from "./bell";
 import { aggregateBell, type BellAggregate, type ReportLeg } from "./bell-summary";
 import { db } from "./db";
@@ -69,5 +70,7 @@ export async function bellReports(userId: string | null, limit = 50): Promise<Be
 }
 
 export async function bellAggregate(): Promise<BellAggregate> {
+  "use cache";
+  cacheLife("minutes");
   return aggregateBell(await bellReports(null, 500));
 }
