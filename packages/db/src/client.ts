@@ -11,8 +11,9 @@ export type Db = ReturnType<typeof createDb>["db"];
 
 /**
  * A single long-lived connection for session-level advisory locks. Pooled connections are recycled
- * (max_lifetime, idle timeout), which would silently release a lock held on them.
+ * (max_lifetime, idle timeout), which would silently release a lock held on them. 0 disables both;
+ * a large lifetime overflows the 32-bit timer and fires after 1 ms.
  */
 export function createLockConnection(url: string) {
-  return postgres(url, { max: 1, max_lifetime: 60 * 60 * 24 * 365, idle_timeout: 0, prepare: false });
+  return postgres(url, { max: 1, max_lifetime: 0, idle_timeout: 0, prepare: false });
 }
