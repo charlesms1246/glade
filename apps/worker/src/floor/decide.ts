@@ -1,6 +1,8 @@
 import {
   chooseInstrument,
   cppiStep,
+  evaluateGuards,
+  GUARD_DEFAULTS,
   groupHoldings,
   type CppiResult,
   type CppiState,
@@ -22,10 +24,12 @@ export interface FloorInputs {
   equity: string;
   holdings: { asset_id: string; economic_asset_id: string; symbol: string; value: string }[];
   /** The Floor's own short per perp (not the user's Shield or Bell hedges), with the current mark. */
-  positions: { asset_id: string; size: string; mark_price: string }[];
+  positions: { asset_id: string; size: string; mark_price: string; liquidation_price?: string | null }[];
   perps: readonly PerpListing[];
   /** Latest perp mark by perp asset id (for legs without a position yet). */
   marks: Readonly<Record<string, string>>;
+  /** Hourly funding rate by perp asset id (positive means shorts receive). Optional. */
+  funding?: Readonly<Record<string, string>>;
 }
 
 export interface FloorParams {
@@ -52,6 +56,8 @@ export interface FloorDecision {
   drafts: FloorDraft[];
   explanation: string;
   skipped: string[];
+  /** Plain-English guard warnings (liquidation distance, negative funding). Never block a trade. */
+  warnings: string[];
 }
 
 /** Reduce-only closes of exactly the given Floor-owned shorts. */
@@ -108,8 +114,31 @@ export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs,
     now,
   );
 
+  // Guards: a hedge above 1.05 x the stock it covers is reduced even when the band or cooldown would hold it.
+  const guards = evaluateGuards(
+    {
+      legs: inp.positions.map((x) => ({ key: x.asset_id, mark: x.mark_price, liquidationPrice: x.liquidation_price ?? null, fundingRateHourly: inp.funding?.[x.asset_id] ?? "0" })),
+      hedgeNow,
+      hedgeTarget: cppi.hedgeTarget,
+      riskyValue,
+      priceAt: now,
+      pauseAll: false,
+      userRevoked: false,
+    },
+    GUARD_DEFAULTS,
+    now,
+  );
+  const overHedged = guards.some((g) => g.kind === "reduce_to_target");
+  const symbolOf = (id: string) => inp.perps.find((q) => q.asset_id === id)?.symbol ?? id;
+  const warnings: string[] = [];
+  for (const g of guards) {
+    if (g.kind === "warn_liquidation" || g.kind === "reduce_leg")
+      warnings.push(`${symbolOf(g.leg)} short is ${fmtPct(g.distance, 1)} from its liquidation price.`);
+    else if (g.kind === "warn_funding") warnings.push(`${symbolOf(g.leg)} funding costs ${fmtPct(g.annualised, 0)} a year while short.`);
+  }
+
   const drafts: FloorDraft[] = [];
-  if (cppi.trade) {
+  if (cppi.trade || overHedged) {
     for (const t of cppi.legTargets) {
       const mark = markOf(t.key);
       if (mark.lte(0)) {
@@ -121,6 +150,7 @@ export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs,
       const diff = targetSize.minus(curSize);
       const qty = floorToStep(diff.abs(), p.sizeStep(t.key));
       if (qty.isZero() || qty.mul(mark).lt(dec(p.minNotionalUsd))) continue;
+      if (!cppi.trade && diff.gt(0)) continue;
       const beta = allowed.find((l) => l.leg.perp_asset_id === t.key)!.leg.beta.toString();
       const notionalUsd = qty.mul(mark).toFixed(2, Decimal.ROUND_UP);
       const leverage = Decimal.min(dec(p.leverage), dec(m.leverageMax)).toString();
@@ -149,5 +179,5 @@ export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs,
       ? `Floor target ${fmtUsd(cppi.floor)}.`
       : `No change: ${cppi.blockedBy.length ? cppi.blockedBy.join(", ").replaceAll("_", " ") : "hedge already on target"} (cushion ${fmtPct(cppi.cushionRatio, 1)}, target floor ${fmtUsd(cppi.floor)}).`;
   const explanation = base + orphanNote;
-  return { cppi, drafts, explanation, skipped };
+  return { cppi, drafts, explanation, skipped, warnings };
 }

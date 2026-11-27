@@ -23,6 +23,8 @@ export interface FloorJobDeps {
   log?: (event: string, fields: Record<string, unknown>) => void;
   /** Users with no active mandate who still hold a Floor short, with the Floor-owned positions to close. */
   strandedHedges?: () => Promise<{ userId: string; positions: FloorInputs["positions"] }[]>;
+  /** Records guard warnings for a user (called at most every 30 minutes per user). */
+  logWarnings?: (userId: string, warnings: string[]) => Promise<void>;
   /** Writes the plain-English record of a wind-down close. */
   logWindDown?: (userId: string, explanation: string, drafts: FloorDraft[]) => Promise<void>;
 }
@@ -69,6 +71,14 @@ export async function runFloorJob(deps: FloorJobDeps, now: Date): Promise<{ trad
       const tradesToday = u.state.tradesDay === today ? u.state.tradesToday : 0;
       const d = decideFloor(u.mandate, { ...u.state, tradesToday }, inp, deps.params, now);
       const peak = d.cppi.peak.toString();
+      if (d.warnings.length && deps.logWarnings) {
+        const key = `${u.userId}:warn`;
+        const last = deps.atRiskLoggedAt?.get(key);
+        if (last === undefined || now.getTime() - last >= AT_RISK_LOG_EVERY_MS) {
+          await deps.logWarnings(u.userId, d.warnings);
+          deps.atRiskLoggedAt?.set(key, now.getTime());
+        }
+      }
       if (d.drafts.length) {
         await deps.insertIntents(u.userId, d.drafts, d);
         await deps.saveState(u.userId, { peak, lastTradeAt: now, tradesDay: today, tradesToday: tradesToday + 1 });

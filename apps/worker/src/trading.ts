@@ -171,8 +171,19 @@ export function startTrading(d: TradingDeps): () => void {
         asset_id: x.asset_id!,
         size: Decimal.max(0, Decimal.min(dec(own[x.asset_id!]!), dec(x.size!))).toString(),
         mark_price: x.mark_price!,
+        liquidation_price: x.liquidation_price ?? null,
       }))
       .filter((x) => dec(x.size).gt(0));
+
+  // Funding settles hourly, so the rates are fetched at most once an hour (shared by the funding job and Floor guards).
+  let ratesCache: { hour: number; rates: Record<string, string> } | undefined;
+  const hourlyRates = async () => {
+    const hour = Math.floor(Date.now() / 3_600_000);
+    if (ratesCache?.hour === hour) return ratesCache.rates;
+    const rates = ratesFromAssets(await tm.listAssets({ product_type: "perp" }));
+    if (Object.keys(rates).length) ratesCache = { hour, rates };
+    return rates;
+  };
 
   const floorInputs = async (userId: string) => {
     const u = venue.forUser(userId);
@@ -190,7 +201,9 @@ export function startTrading(d: TradingDeps): () => void {
         // A perp without a price is skipped by the decision.
       }
     }
+    const rates = await hourlyRates().catch(() => ({}) as Record<string, string>);
     return {
+      funding: Object.fromEntries(perps.filter((x) => rates[x.symbol] !== undefined).map((x) => [x.asset_id, rates[x.symbol]!])),
       equity: p.total_usd ?? "0",
       holdings,
       positions: ownedPositions(pos.positions, own),
@@ -271,6 +284,8 @@ export function startTrading(d: TradingDeps): () => void {
             }
             return out;
           },
+          logWarnings: (u, warnings) =>
+            logDecision(db, { userId: u, engineVersion: ENGINE_VERSION, action: "floor_guard_warning", explanation: `Heads up: ${warnings.join(" ")}`, inputs: {}, outputs: { warnings } }),
           logWindDown: (u, explanation, drafts) =>
             logDecision(db, { userId: u, engineVersion: ENGINE_VERSION, action: "floor_wind_down", explanation, inputs: {}, outputs: { drafts } }).then(() =>
               publish(db, { type: "floor", data: { userId: u, explanation } }),
@@ -330,7 +345,7 @@ export function startTrading(d: TradingDeps): () => void {
       const r = await runFundingJob(
         {
           users: () => paperUsersWithPositions(db),
-          hourlyRates: async () => ratesFromAssets(await tm.listAssets({ product_type: "perp" })),
+          hourlyRates,
           accrue: venue.accrueFunding,
           log: (event, fields) => log.warn(fields, event),
         },

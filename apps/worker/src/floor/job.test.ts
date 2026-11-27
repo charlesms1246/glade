@@ -100,3 +100,16 @@ describe("wind-down of a stranded Floor hedge", () => {
     expect(calls.inserted).toBe(0);
   });
 });
+
+describe("guard warnings", () => {
+  it("logs warnings at most every 30 minutes per user", async () => {
+    const logged: string[][] = [];
+    const warned: FloorInputs = { ...thin, positions: [{ asset_id: "p", size: "1", mark_price: "100", liquidation_price: "105" }] };
+    const { d } = deps({ inputs: async () => warned, logWarnings: async (_u, w) => void logged.push(w), atRiskLoggedAt: new Map() });
+    await runFloorJob(d, now);
+    await runFloorJob(d, new Date(now.getTime() + 60_000));
+    expect(logged).toHaveLength(1);
+    await runFloorJob(d, new Date(now.getTime() + 31 * 60_000));
+    expect(logged).toHaveLength(2);
+  });
+});

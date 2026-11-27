@@ -102,3 +102,25 @@ describe("decideFloor with no holdings left", () => {
     expect(decideFloor(mandate, state, { equity: "1000", holdings: [], positions: [], perps, marks: {} }, params, now).drafts).toEqual([]);
   });
 });
+
+describe("decideFloor guards", () => {
+  it("reduces a hedge above 1.05 x holdings even inside the cooldown, never increasing", () => {
+    // 3 held (value 300), short 7 (value 700): over-hedged, cushion large so the target is 0
+    const over = inputs("1000", "300", "7");
+    const cooling = { ...state, lastTradeAt: new Date(now.getTime() - 1000) };
+    const d = decideFloor(mandate, cooling, over, params, now);
+    expect(d.drafts).toHaveLength(1);
+    expect(d.drafts[0]).toMatchObject({ kind: "decrease", side: "buy", reduceOnly: true });
+  });
+  it("does not trade inside the cooldown when not over-hedged", () => {
+    const cooling = { ...state, lastTradeAt: new Date(now.getTime() - 1000) };
+    expect(decideFloor(mandate, cooling, inputs("900", "900"), params, now).drafts).toEqual([]);
+  });
+  it("warns about a close liquidation price and negative funding without trading", () => {
+    const i = inputs("900", "900", "7");
+    const d = decideFloor(mandate, state, { ...i, positions: [{ ...i.positions[0]!, liquidation_price: "105" }], funding: { "perp-nvda": "-0.0001" } }, params, now);
+    expect(d.warnings).toHaveLength(2);
+    expect(d.warnings[0]).toMatch(/NVDA short is 5\.0% from its liquidation price/);
+    expect(d.warnings[1]).toMatch(/funding costs 88% a year/);
+  });
+});
