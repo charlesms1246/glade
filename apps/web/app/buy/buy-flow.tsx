@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { FillStatus } from "@/components/fill-status";
 import { approve, type Offer } from "@/lib/client/approve";
 import { usd, qty } from "@/lib/client/format";
 import { api, errText } from "@/lib/client/http";
@@ -14,7 +15,7 @@ export function BuyFlow() {
   const [pick, setPick] = useState<StockListing | null>(null);
   const [amount, setAmount] = useState("25");
   const [offer, setOffer] = useState<Offer<BuyPlan> | null>(null);
-  const [done, setDone] = useState(false);
+  const [intentId, setIntentId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -45,11 +46,11 @@ export function BuyFlow() {
   const preview = () => step(async () => setOffer(await api<Offer<BuyPlan>>("/api/buy/plan", { symbol: pick!.symbol, usd: amount })));
   const confirm = () =>
     step(async () => {
-      await approve(offer!, "/api/buy/confirm");
-      setDone(true);
+      const r = await approve<BuyPlan, { intentId: string }>(offer!, "/api/buy/confirm");
+      setIntentId(r.intentId);
     });
 
-  if (done && offer) {
+  if (intentId && offer) {
     return (
       <div className="rounded-2xl bg-sand p-7" aria-live="polite">
         <p className="font-display text-2xl text-forest-deep">Order queued</p>
@@ -57,6 +58,7 @@ export function BuyFlow() {
           Your paper buy of {usd(offer.plan.usd)} of {offer.plan.symbol} is with Glade&apos;s executor. It fills at the live price
           within a few seconds.
         </p>
+        <FillStatus match={(it) => it.id === `i:${intentId}`} expected={1} />
         <div className="mt-6 flex gap-3">
           <Link href="/activity" className="rounded-full bg-forest px-6 py-3 text-sm font-medium text-paper hover:bg-forest-deep">
             Follow it in Activity

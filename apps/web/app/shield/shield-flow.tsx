@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { FillStatus } from "@/components/fill-status";
 import { ShieldPlanView } from "@/components/shield-plan-view";
 import { approve, type Offer } from "@/lib/client/approve";
 import { qty, signedUsd, usd } from "@/lib/client/format";
@@ -16,6 +17,7 @@ export function ShieldFlow() {
   const [offer, setOffer] = useState<Offer<ShieldPlan> | null>(null);
   const [unshield, setUnshield] = useState<Offer<UnshieldPlan> | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [placed, setPlaced] = useState<{ hedgeId: string; legs: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -34,11 +36,13 @@ export function ShieldFlow() {
   const review = () =>
     step(async () => {
       setNotice(null);
+      setPlaced(null);
       setOffer(await api<Offer<ShieldPlan>>("/api/shield/plan", { ratio: (ratio / 100).toFixed(2), kind: "shield" }));
     });
   const confirm = () =>
     step(async () => {
-      await approve(offer!, "/api/shield/confirm");
+      const r = await approve<ShieldPlan, { hedgeId: string }>(offer!, "/api/shield/confirm");
+      setPlaced({ hedgeId: r.hedgeId, legs: offer!.plan.legs.filter((l) => !l.reduceOnly).length });
       setOffer(null);
       setNotice("Shield queued. The executor opens each leg within a few seconds.");
       void refresh();
@@ -48,6 +52,7 @@ export function ShieldFlow() {
     step(async () => {
       await approve(unshield!, "/api/shield/unshield/confirm");
       setUnshield(null);
+      setPlaced(null);
       setNotice("Unshield queued. Each hedge is bought back with reduce-only orders.");
       void refresh();
     });
@@ -164,6 +169,7 @@ export function ShieldFlow() {
       {notice && (
         <p className="rounded-xl bg-sand p-4 text-sm" aria-live="polite">
           {notice} <Link href="/activity" className="text-forest underline">Activity</Link>
+          {placed && <FillStatus match={(it) => it.hedgeId === placed.hedgeId} expected={placed.legs} />}
         </p>
       )}
       {error && <p role="alert" className="text-sm text-rose">{error}</p>}

@@ -2,6 +2,7 @@ import "server-only";
 import { schema } from "@glade/db";
 import { dec } from "@glade/shared";
 import { and, desc, eq, inArray } from "drizzle-orm";
+import { decisionTitle, orderTitle } from "./activity-title";
 import { db, tmEnv } from "./db";
 import type { PlanBase } from "./plans";
 
@@ -9,20 +10,13 @@ export interface ActivityItem {
   id: string;
   at: string;
   type: "order" | "decision";
+  /** The hedge an order belongs to, when it has one. */
+  hedgeId: string | null;
   title: string;
   explanation: string;
   status: string | null;
   fill: { qty: string | null; price: string | null; fee: string | null; explorerUrl: string | null } | null;
 }
-
-const KIND_TEXT: Record<string, string> = {
-  spot_buy: "Buy",
-  spot_sell: "Sell",
-  open: "Open hedge",
-  increase: "Raise hedge",
-  decrease: "Trim hedge",
-  close: "Close hedge",
-};
 
 /** The user's orders (intents with their latest attempt) and engine decisions, newest first. */
 export async function activity(userId: string, limit = 50): Promise<ActivityItem[]> {
@@ -51,12 +45,12 @@ export async function activity(userId: string, limit = 50): Promise<ActivityItem
       const o = latest.get(i.id);
       const plan = (i.inputs as { plan?: PlanBase }).plan;
       const symbol = plan?.legs?.find((l) => l.assetId === i.assetId)?.symbol ?? symbols.get(i.assetId) ?? "";
-      const amount = i.qtyUnit === "quote" ? `${dec(i.qty).toFixed(2)} USD of` : dec(i.qty).toFixed();
       return {
         id: `i:${i.id}`,
         at: i.createdAt.toISOString(),
         type: "order",
-        title: `${KIND_TEXT[i.kind] ?? i.kind}: ${i.side} ${amount} ${symbol}${i.kind === "spot_buy" || i.kind === "spot_sell" ? "" : " perp"}`.trim(),
+        hedgeId: i.hedgeId ?? null,
+        title: orderTitle(i.kind, dec(i.qty).toFixed(), i.qtyUnit, symbol),
         explanation: i.reason,
         status: o?.status ?? i.status,
         fill: o ? { qty: o.executedQty && dec(o.executedQty).toFixed(), price: o.avgPrice, fee: o.fee, explorerUrl: o.explorerUrl } : null,
@@ -67,7 +61,8 @@ export async function activity(userId: string, limit = 50): Promise<ActivityItem
         id: `d:${d.id}`,
         at: d.at.toISOString(),
         type: "decision",
-        title: d.action.replaceAll("_", " "),
+        hedgeId: null,
+        title: decisionTitle(d.action),
         explanation: d.explanation,
         status: null,
         fill: null,
