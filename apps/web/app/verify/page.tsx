@@ -1,6 +1,6 @@
 import { connection } from "next/server";
 import { Suspense } from "react";
-import { verifyStats } from "@/lib/server/verify";
+import { apiCallStats, recentOrders, verifyStats } from "@/lib/server/verify";
 
 const REPO = "https://github.com/charlesms1246/glade/blob/main";
 
@@ -35,6 +35,91 @@ const STATUS_TEXT: Record<string, string> = { done: "filled", failed: "failed", 
 
 function Badge({ s }: { s: string }) {
   return <span className={`rounded-full px-2 py-0.5 text-xs ${s === "live" ? "bg-forest text-paper" : "bg-moss/20 text-forest"}`}>{s}</span>;
+}
+
+const classes = ["2xx", "4xx", "5xx"] as const;
+
+async function Evidence() {
+  await connection();
+  const [orders, api] = await Promise.all([recentOrders(), apiCallStats()]);
+  const split = (o: Record<string, number>) => classes.map((c) => `${o[c] ?? 0}`).join(" / ");
+  return (
+    <>
+      <h2 className="mt-12 font-display text-2xl">Recent orders</h2>
+      <p className="mt-2 text-sm text-ink-soft">
+        The last 20 orders across all users, anonymous. Paper fills on live True Markets prices (no real money), so there is no
+        on-chain explorer link.
+      </p>
+      {orders.length === 0 ? (
+        <p className="mt-4 rounded-2xl bg-sand p-5 text-ink-soft">No orders yet.</p>
+      ) : (
+        <div className="mt-4 overflow-x-auto rounded-2xl border border-sand-deep bg-white/80 p-5">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs uppercase tracking-wider text-ink-soft">
+              <tr>
+                <th className="pb-2 pr-4 font-normal">Time (UTC)</th>
+                <th className="pb-2 pr-4 font-normal">Symbol</th>
+                <th className="pb-2 pr-4 font-normal">Side</th>
+                <th className="pb-2 pr-4 text-right font-normal">Qty</th>
+                <th className="pb-2 pr-4 text-right font-normal">Fill price</th>
+                <th className="pb-2 pr-4 font-normal">Status</th>
+                <th className="pb-2 pr-4 font-normal">Reduce-only</th>
+                <th className="pb-2 font-normal">Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((r, i) => (
+                <tr key={`${r.at}-${i}`} className="border-t border-sand-deep">
+                  <td className="num py-2 pr-4 text-xs">{r.at.slice(0, 19).replace("T", " ")}</td>
+                  <td className="py-2 pr-4">{r.symbol}</td>
+                  <td className="py-2 pr-4">{r.side}</td>
+                  <td className="num py-2 pr-4 text-right">{r.qty}</td>
+                  <td className="num py-2 pr-4 text-right">{r.price ? `$${Number(r.price).toFixed(2)}` : "—"}</td>
+                  <td className="py-2 pr-4">{r.status}</td>
+                  <td className="py-2 pr-4">{r.reduceOnly ? "yes" : "no"}</td>
+                  <td className="py-2">{r.source}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <h2 className="mt-12 font-display text-2xl">True Markets API calls</h2>
+      <p className="mt-2 text-sm text-ink-soft">
+        Environment: <strong className="text-ink">{api.env === "prod" ? "production, read-only" : "UAT, paper funds"}</strong>.
+        Calls made by the Glade worker, counted by endpoint (no ids, queries or payloads are stored). Today (UTC):{" "}
+        <span className="num">{api.todayTotal}</span> · since launch: <span className="num">{api.total}</span>. Columns show
+        2xx / 4xx / 5xx.
+      </p>
+      {api.rows.length === 0 ? (
+        <p className="mt-4 rounded-2xl bg-sand p-5 text-ink-soft">No calls recorded yet.</p>
+      ) : (
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full text-left text-sm">
+            <thead className="text-xs uppercase tracking-wider text-ink-soft">
+              <tr>
+                <th className="py-2 pr-4 font-normal">Endpoint</th>
+                <th className="py-2 pr-4 text-right font-normal">Today</th>
+                <th className="py-2 text-right font-normal">Since launch</th>
+              </tr>
+            </thead>
+            <tbody>
+              {api.rows.map((r) => (
+                <tr key={`${r.method} ${r.route}`} className="border-t border-sand-deep/70">
+                  <td className="num py-2 pr-4 text-xs">
+                    {r.method} {r.route}
+                  </td>
+                  <td className="num py-2 pr-4 text-right text-xs">{split(r.today)}</td>
+                  <td className="num py-2 text-right text-xs">{split(r.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
 }
 
 async function Live() {
@@ -112,6 +197,10 @@ export default function VerifyPage() {
           <Live />
         </Suspense>
       </section>
+
+      <Suspense fallback={<div className="mt-12 h-28 animate-pulse rounded-2xl bg-sand" />}>
+        <Evidence />
+      </Suspense>
 
       <h2 className="mt-14 font-display text-2xl">True Markets endpoints</h2>
       <p className="mt-2 text-sm text-ink-soft">
