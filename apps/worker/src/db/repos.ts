@@ -94,8 +94,13 @@ export function onboardingRepo(db: Db): OnboardingRepo {
       };
     },
     async saveSigner(userId, env, s) {
-      // Primary key on user_id: a second key for the same user fails instead of silently replacing it.
-      await db.insert(signerKeys).values({ userId, env, publicKeyHex: s.publicKeyHex, ...s.sealed });
+      // Primary key on user_id: a second key for the same user fails instead of silently replacing a live one.
+      // A revoked key is replaced, otherwise that user could never be onboarded again.
+      const row = { userId, env, publicKeyHex: s.publicKeyHex, ...s.sealed };
+      await db
+        .insert(signerKeys)
+        .values(row)
+        .onConflictDoUpdate({ target: signerKeys.userId, set: { ...row, revokedAt: null }, setWhere: sql`${signerKeys.revokedAt} is not null` });
     },
     async getTmUser(userId) {
       const [r] = await db.select().from(tmUsers).where(eq(tmUsers.userId, userId));

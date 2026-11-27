@@ -1,6 +1,6 @@
 import { schema, type Db } from "@glade/db";
 import { dec, type TmEnv } from "@glade/shared";
-import { and, asc, eq, gte, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, gte, isNull, notInArray, sql } from "drizzle-orm";
 import type { AssetRegistry, PaperAsset, PaperOrder, PaperRepo, PaperState } from "./types";
 
 const { appUsers, assetRegistry, paperAccounts, paperEquitySnapshots, paperHoldings, paperLedger, paperOrders, paperPositions, signerKeys } = schema;
@@ -149,12 +149,12 @@ export function drizzleRegistry(db: Db, env: TmEnv): AssetRegistry {
 }
 
 /** App users that have no paper account yet (for the onboarding job). */
-export async function usersWithoutPaperAccount(db: Db, limit: number): Promise<string[]> {
+export async function usersWithoutPaperAccount(db: Db, limit: number, exclude: string[] = []): Promise<string[]> {
   const rows = await db
     .select({ id: appUsers.id })
     .from(appUsers)
     .leftJoin(paperAccounts, eq(paperAccounts.userId, appUsers.id))
-    .where(isNull(paperAccounts.userId))
+    .where(and(isNull(paperAccounts.userId), exclude.length ? notInArray(appUsers.id, exclude) : undefined))
     .orderBy(asc(appUsers.createdAt))
     .limit(limit);
   return rows.map((r) => r.id);

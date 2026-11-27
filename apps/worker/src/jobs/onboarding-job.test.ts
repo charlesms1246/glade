@@ -59,3 +59,26 @@ describe("onboarding job (paper first)", () => {
     expect(r.ready).toEqual(["b"]);
   });
 });
+
+describe("onboarding failure backoff", () => {
+  it("skips a failed user until the backoff ends and asks the query to exclude them", async () => {
+    let t = 0;
+    const failedAt = new Map<string, number>();
+    const asked: string[][] = [];
+    const { d } = deps({
+      pending: async (_l, _g, ex) => (asked.push(ex), [{ id: "bad" }].filter((x) => !ex.includes(x.id))),
+      ensureSigner: async () => {
+        throw new Error("duplicate key");
+      },
+      failedAt,
+      now: () => t,
+      backoffMs: 1000,
+    });
+    expect((await runOnboardingJob(d)).failed).toEqual(["bad"]);
+    t = 500;
+    expect((await runOnboardingJob(d)).failed).toEqual([]);
+    expect(asked[1]).toEqual(["bad"]);
+    t = 1500;
+    expect((await runOnboardingJob(d)).failed).toEqual(["bad"]);
+  });
+});

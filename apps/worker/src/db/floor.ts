@@ -1,7 +1,7 @@
 import { schema, type Db } from "@glade/db";
 import { usersWithoutPaperAccount } from "@glade/paper";
 import { Decimal } from "@glade/shared";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { FloorDecision, FloorDraft } from "../floor/decide";
 import type { FloorUser } from "../floor/job";
 
@@ -82,15 +82,15 @@ export async function insertFloorIntents(db: Db, userId: string, drafts: FloorDr
 }
 
 /** Users missing a paper account, plus (when allowed) users without a Gateway user. */
-export async function pendingOnboarding(db: Db, limit: number, includeGateway: boolean): Promise<{ id: string }[]> {
-  const noPaper = await usersWithoutPaperAccount(db, limit);
+export async function pendingOnboarding(db: Db, limit: number, includeGateway: boolean, exclude: string[] = []): Promise<{ id: string }[]> {
+  const noPaper = await usersWithoutPaperAccount(db, limit, exclude);
   const noTm = includeGateway
     ? (
         await db
           .select({ id: appUsers.id })
           .from(appUsers)
           .leftJoin(tmUsers, eq(tmUsers.userId, appUsers.id))
-          .where(isNull(tmUsers.userId))
+          .where(and(isNull(tmUsers.userId), exclude.length ? notInArray(appUsers.id, exclude) : undefined))
           .orderBy(appUsers.createdAt)
           .limit(limit)
       ).map((r) => r.id)

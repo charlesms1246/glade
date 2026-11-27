@@ -341,6 +341,7 @@ export function startTrading(d: TradingDeps): () => void {
   );
 
   // Paper-first onboarding. Gateway users are linked when the org allows; refusals back off for an hour.
+  const onboardingFailedAt = new Map<string, number>();
   let gatewayBackoffUntil = 0;
   let budgetDay = "";
   let paperToday = 0;
@@ -352,7 +353,8 @@ export function startTrading(d: TradingDeps): () => void {
         paperToday = 0;
       }
       const r = await runOnboardingJob({
-        pending: (n, gw) => pendingOnboarding(db, n, gw),
+        pending: (n, gw, ex) => pendingOnboarding(db, n, gw, ex),
+        failedAt: onboardingFailedAt,
         ensureSigner: async (userId) => void (await ensureSigner({ repo: onboarding, masterKey, env: env.TM_ENV }, userId)),
         ensurePaper: async (userId) => {
           const created = await venue.ensurePaperAccount(userId, PAPER_START_USD);
