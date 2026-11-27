@@ -82,12 +82,6 @@ export async function publish(db: Db, event: { type: string; data: unknown }): P
   await db.execute(sql`select pg_notify('glade_events', ${JSON.stringify(event)})`);
 }
 
-/** Single leader across worker instances. Returns false if another worker holds the lock. */
-export async function tryLeaderLock(db: Db): Promise<boolean> {
-  const r = await db.execute<{ locked: boolean }>(sql`select pg_try_advisory_lock(hashtext('glade-worker')) as locked`);
-  return Boolean((r as unknown as { locked: boolean }[])[0]?.locked);
-}
-
 export function onboardingRepo(db: Db): OnboardingRepo {
   const { signerKeys, tmUsers } = schema;
   return {

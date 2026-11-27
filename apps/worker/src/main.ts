@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { createDb, schema } from "@glade/db";
+import { createDb, createLockConnection, schema } from "@glade/db";
 import { ENGINE_VERSION, referenceSpotSymbol } from "@glade/engine";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { apiKeyMinter, createTmClient, TokenManager, type OrgKey } from "@glade/tm-client";
@@ -7,7 +7,8 @@ import { and, eq } from "drizzle-orm";
 import pino from "pino";
 import { createBellService } from "./bell/service";
 import { BELL_WATCHLIST, loadBellSigma, TICK_MS } from "./config";
-import { bellRepo, logDecision, publish, tryLeaderLock } from "./db/repos";
+import { bellRepo, logDecision, publish } from "./db/repos";
+import { acquireLeaderLock, watchLeaderLock, type LockSql } from "./leader";
 import { PriceCache } from "./market/price-cache";
 import { MarketStream } from "./market/stream";
 import { startTrading } from "./trading";
@@ -15,7 +16,7 @@ import { startTrading } from "./trading";
 const env = loadEnv();
 const log = pino({ name: "glade-worker", level: process.env.LOG_LEVEL ?? "info" });
 const urls = TM_BASE_URLS[env.TM_ENV];
-const { db, sql } = createDb(env.DATABASE_URL, { max: 3 });
+const { db, sql } = createDb(env.DATABASE_URL, { max: 6 });
 
 // Org mode needs an organization key. Without one the worker still runs public market data and Bell.
 let tokens: TokenManager | undefined;
@@ -35,11 +36,19 @@ const tm = createTmClient({
   onResponse: (r) => r.status >= 400 && log.warn({ ...r }, "tm_http_error"),
 });
 
-if (!(await tryLeaderLock(db))) {
+// The lock lives on its own connection: pooled ones are recycled, which would release it silently.
+const lockSql = createLockConnection(env.DATABASE_URL);
+const lockQuery = lockSql as unknown as LockSql;
+if (!(await acquireLeaderLock(lockQuery))) {
   log.error("another worker holds the leader lock; exiting");
+  await lockSql.end();
   await sql.end();
   process.exit(1);
 }
+const stopLockWatch = watchLeaderLock(lockQuery, (reason) => {
+  log.fatal({ reason }, "leader lock lost; exiting so the supervisor restarts the worker");
+  process.exit(1);
+});
 
 // Tokenized stocks trade under issuer symbols (AAPLC, NVDAon, ...); market data needs a listed one.
 const reg = schema.assetRegistry;
@@ -106,8 +115,10 @@ log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(
 async function shutdown() {
   clearInterval(timer);
   stopTrading();
+  stopLockWatch();
   stream.stop();
   await sql.end({ timeout: 5 });
+  await lockSql.end({ timeout: 5 });
   process.exit(0);
 }
 process.on("SIGINT", shutdown);
