@@ -74,6 +74,41 @@ describe("mandateCheck (automation)", () => {
   });
 });
 
+describe("mandateCheck cumulative cap and wind-down", () => {
+  it("counts the short already open against the cap", () => {
+    const c = { ...ctx, hedgeableValue: "100", existingShortUsd: "95", maxOrderUsd: "1000" };
+    expect(mandateCheck({ ...short, notionalUsd: "10" }, c)).toEqual({ ok: true });
+    expect(mandateCheck({ ...short, notionalUsd: "11" }, c).ok).toBe(false);
+  });
+  it("uses the group value, not the whole portfolio, when given", () => {
+    const c = { ...ctx, riskyValue: "20000", hedgeableValue: "10", maxOrderUsd: "100000" };
+    expect(mandateCheck({ ...short, notionalUsd: "10500" }, c).ok).toBe(false);
+  });
+  it("never blocks reduce-only buys on the cap", () => {
+    const c = { ...ctx, hedgeableValue: "0", existingShortUsd: "500" };
+    expect(mandateCheck({ ...short, kind: "decrease", side: "buy", reduceOnly: true, leverage: null }, c).ok).toBe(true);
+  });
+  it("property: existing + new above 1.05 x holding x beta is refused", () => {
+    fc.assert(
+      fc.property(fc.integer({ min: 1, max: 1000 }), fc.integer({ min: 0, max: 1000 }), fc.integer({ min: 1, max: 1000 }), (hold, ex, n) => {
+        const c = { ...ctx, hedgeableValue: String(hold), existingShortUsd: String(ex), maxOrderUsd: "1000000" };
+        const r = mandateCheck({ ...short, notionalUsd: String(n) }, c).ok;
+        return r === (n + ex <= 1.05 * hold + 1e-9);
+      }),
+    );
+  });
+  const close = { ...short, kind: "close" as const, side: "buy" as const, reduceOnly: true, leverage: null, qty: "0.5", notionalUsd: "5" };
+  it("lets a revoked or paused mandate wind down only the owned size, reduce-only", () => {
+    const revoked = { ...ctx, mandate: { ...ctx.mandate!, status: "revoked" as const }, ownedShortQty: "0.5" };
+    expect(mandateCheck(close, revoked)).toEqual({ ok: true });
+    expect(mandateCheck(close, { ...revoked, mandate: null }).ok).toBe(true);
+    expect(mandateCheck({ ...close, qty: "0.6" }, revoked).ok).toBe(false);
+    expect(mandateCheck(close, { ...revoked, ownedShortQty: undefined }).ok).toBe(false);
+    expect(mandateCheck({ ...close, side: "sell", reduceOnly: false, qty: "0.5" }, revoked).ok).toBe(false);
+    expect(mandateCheck(close, { ...revoked, env: "prod" }).ok).toBe(false);
+  });
+});
+
 describe("mandateCheck (user-approved)", () => {
   const userCtx = { ...ctx, mandate: null, assertion: { planHash: "abc", approvedAssetIds: ["p-sp500", "s-nvda"] } };
   it("requires a matching plan hash", () => {

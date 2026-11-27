@@ -1,5 +1,5 @@
 import type { CppiState } from "@glade/engine";
-import { decideFloor, type FloorDecision, type FloorDraft, type FloorInputs, type FloorMandate, type FloorParams } from "./decide";
+import { closeDrafts, decideFloor, type FloorDecision, type FloorDraft, type FloorInputs, type FloorMandate, type FloorParams } from "./decide";
 
 export interface FloorUser {
   userId: string;
@@ -12,7 +12,7 @@ export interface FloorJobDeps {
   inputs: (userId: string) => Promise<FloorInputs | null>;
   /** Users with an unfinished intent are skipped so Floor never stacks orders. */
   hasOpenIntents: (userId: string) => Promise<boolean>;
-  insertIntents: (userId: string, drafts: FloorDraft[], d: FloorDecision) => Promise<void>;
+  insertIntents: (userId: string, drafts: FloorDraft[], d: Pick<FloorDecision, "explanation"> & Partial<Pick<FloorDecision, "cppi">>) => Promise<void>;
   saveState: (userId: string, s: { peak: string; lastTradeAt: Date | null; tradesDay: string; tradesToday: number }) => Promise<void>;
   logDecision: (userId: string, d: FloorDecision) => Promise<void>;
   params: FloorParams;
@@ -21,6 +21,10 @@ export interface FloorJobDeps {
   /** Last time a "target at risk" decision was logged per user; throttles the log. */
   atRiskLoggedAt?: Map<string, number>;
   log?: (event: string, fields: Record<string, unknown>) => void;
+  /** Users with no active mandate who still hold a Floor short, with the Floor-owned positions to close. */
+  strandedHedges?: () => Promise<{ userId: string; positions: FloorInputs["positions"] }[]>;
+  /** Writes the plain-English record of a wind-down close. */
+  logWindDown?: (userId: string, explanation: string, drafts: FloorDraft[]) => Promise<void>;
 }
 
 const day = (d: Date) => d.toISOString().slice(0, 10);
@@ -30,6 +34,26 @@ export async function runFloorJob(deps: FloorJobDeps, now: Date): Promise<{ trad
   const traded: string[] = [];
   const idle: string[] = [];
   if (deps.paused()) return { traded, idle };
+  // A paused or revoked mandate must not strand the Floor's own short: close exactly that size, reduce-only.
+  if (deps.strandedHedges) {
+    try {
+      for (const s of await deps.strandedHedges()) {
+        try {
+          if (await deps.hasOpenIntents(s.userId)) continue;
+          const drafts = closeDrafts(s.positions);
+          if (drafts.length === 0) continue;
+          const explanation = "Your Floor mandate is no longer active, so the hedge it opened is being closed (reduce-only).";
+          await deps.insertIntents(s.userId, drafts, { explanation });
+          await deps.logWindDown?.(s.userId, explanation, drafts);
+          traded.push(s.userId);
+        } catch (e) {
+          deps.log?.("floor_wind_down_failed", { userId: s.userId, error: String(e).slice(0, 300) });
+        }
+      }
+    } catch (e) {
+      deps.log?.("floor_wind_down_failed", { error: String(e).slice(0, 300) });
+    }
+  }
   for (const u of await deps.activeUsers()) {
     try {
       if (await deps.hasOpenIntents(u.userId)) {

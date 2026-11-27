@@ -87,3 +87,18 @@ describe("issuer tokens in Floor", () => {
     expect(d.drafts[0]?.assetId).toBe("perp-amd");
   });
 });
+
+describe("decideFloor with no holdings left", () => {
+  it("closes the Floor's own short reduce-only, even inside the cooldown", () => {
+    const empty: FloorInputs = { equity: "1000", holdings: [], positions: [{ asset_id: "perp-nvda", size: "7", mark_price: "100" }], perps, marks: {} };
+    const cooling = { ...state, lastTradeAt: new Date(now.getTime() - 1000) };
+    const d = decideFloor(mandate, cooling, empty, params, now);
+    expect(d.drafts).toEqual([
+      { kind: "decrease", assetId: "perp-nvda", side: "buy", qty: "7", leverage: null, reduceOnly: true, notionalUsd: "700.00", beta: "1" },
+    ]);
+    expect(d.explanation).toMatch(/no matching stock is held any more/);
+  });
+  it("does nothing when there is no short either", () => {
+    expect(decideFloor(mandate, state, { equity: "1000", holdings: [], positions: [], perps, marks: {} }, params, now).drafts).toEqual([]);
+  });
+});

@@ -54,6 +54,22 @@ export interface FloorDecision {
   skipped: string[];
 }
 
+/** Reduce-only closes of exactly the given Floor-owned shorts. */
+export function closeDrafts(positions: FloorInputs["positions"]): FloorDraft[] {
+  return positions
+    .filter((x) => dec(x.size).gt(0))
+    .map((x) => ({
+      kind: "decrease" as const,
+      assetId: x.asset_id,
+      side: "buy" as const,
+      qty: dec(x.size).toString(),
+      leverage: null,
+      reduceOnly: true,
+      notionalUsd: dec(x.size).mul(dec(x.mark_price)).toFixed(2, Decimal.ROUND_UP),
+      beta: "1",
+    }));
+}
+
 /** One Floor rebalance decision. Pure: the caller persists the new peak and trade bookkeeping. */
 export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs, p: FloorParams, now: Date): FloorDecision {
   // Perp symbols are the known bases, so issuer tokens (AMDX, NVDAon) map to their stock.
@@ -116,9 +132,22 @@ export function decideFloor(m: FloorMandate, state: CppiState, inp: FloorInputs,
     }
   }
 
+  // A Floor short on a perp that no held stock maps to any more (sold out, or mandate narrowed) is closed.
+  const legIds = new Set(allowed.map((l) => l.leg.perp_asset_id));
+  const orphans = inp.positions.filter((x) => !legIds.has(x.asset_id) && m.allowedPerps.includes(x.asset_id));
+  const orphanDrafts = closeDrafts(orphans);
+  drafts.push(...orphanDrafts);
+  const orphanNote = orphanDrafts.length
+    ? ` Closed the Floor hedge on ${orphans.map((x) => inp.perps.find((q) => q.asset_id === x.asset_id)?.symbol ?? x.asset_id).join(", ")}: no matching stock is held any more.`
+    : "";
+
   const hedgeRatio = riskyValue.gt(0) ? cppi.hedgeTarget.div(riskyValue) : new Decimal(0);
-  const explanation = drafts.length
+  const rebalanced = drafts.length > orphanDrafts.length;
+  const base = rebalanced
     ? `Hedge ${cppi.delta.gt(0) ? "raised" : "lowered"} toward ${fmtPct(hedgeRatio, 0)} of stock value: equity ${fmtUsd(inp.equity)}, target floor ${fmtUsd(cppi.floor)}, cushion ${fmtPct(cppi.cushionRatio, 1)}.`
-    : `No change: ${cppi.blockedBy.length ? cppi.blockedBy.join(", ").replaceAll("_", " ") : "hedge already on target"} (cushion ${fmtPct(cppi.cushionRatio, 1)}, target floor ${fmtUsd(cppi.floor)}).`;
+    : orphanDrafts.length
+      ? `Floor target ${fmtUsd(cppi.floor)}.`
+      : `No change: ${cppi.blockedBy.length ? cppi.blockedBy.join(", ").replaceAll("_", " ") : "hedge already on target"} (cushion ${fmtPct(cppi.cushionRatio, 1)}, target floor ${fmtUsd(cppi.floor)}).`;
+  const explanation = base + orphanNote;
   return { cppi, drafts, explanation, skipped };
 }

@@ -115,6 +115,29 @@ describe("authorizeIntent (automation)", () => {
   });
 });
 
+describe("authorizeIntent cumulative cap and wind-down", () => {
+  const auto = (over: Partial<IntentRow> = {}) =>
+    row({ planHash: null, ...over, inputs: { source: "automation", notionalUsd: "10", beta: "1" } });
+  const withMandate = (over: Partial<PolicyDeps> = {}) => deps({ getActiveMandate: async () => signedMandate(), ...over });
+
+  it("refuses a short when the existing short on the same stock already uses the cap", async () => {
+    const d = withMandate({ riskyValue: async () => "10000", exposure: async () => ({ holdingValue: "10", existingShortUsd: "5" }) });
+    const r = await authorizeIntent(auto(), d, new Date());
+    expect(r).toEqual({ ok: false, reasons: ["notional exceeds 1.05 × holdings × beta"] });
+    expect((await authorizeIntent(auto(), withMandate({ exposure: async () => ({ holdingValue: "10", existingShortUsd: "0" }) }), new Date())).ok).toBe(true);
+  });
+
+  const close = (over: Partial<IntentRow> = {}) => auto({ kind: "decrease", side: "buy", reduceOnly: true, leverage: null, qty: "0.06", ...over });
+  it("closes only the owned size when the mandate is no longer active", async () => {
+    const d = deps({ ownedShortQty: async () => "0.06" });
+    expect((await authorizeIntent(close(), d, new Date())).ok).toBe(true);
+    expect((await authorizeIntent(close({ qty: "0.07" }), d, new Date())).ok).toBe(false);
+    expect((await authorizeIntent(close(), deps({ ownedShortQty: async () => "0" }), new Date())).ok).toBe(false);
+    expect((await authorizeIntent(close(), deps(), new Date())).ok).toBe(false);
+    expect((await authorizeIntent(auto(), d, new Date())).ok).toBe(false);
+  });
+});
+
 describe("mandate authenticity", () => {
   const auto = () => row({ planHash: null, inputs: { source: "automation", notionalUsd: "10", beta: "1" } });
 

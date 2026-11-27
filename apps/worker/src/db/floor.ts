@@ -51,7 +51,7 @@ export async function hasOpenIntents(db: Db, userId: string): Promise<boolean> {
 }
 
 /** Automation intents under the user's Floor hedge (created on first use). */
-export async function insertFloorIntents(db: Db, userId: string, drafts: FloorDraft[], d: FloorDecision): Promise<void> {
+export async function insertFloorIntents(db: Db, userId: string, drafts: FloorDraft[], d: Pick<FloorDecision, "explanation"> & Partial<Pick<FloorDecision, "cppi">>): Promise<void> {
   await db.transaction(async (tx) => {
     let [h] = await tx
       .select({ id: hedges.id })
@@ -74,7 +74,7 @@ export async function insertFloorIntents(db: Db, userId: string, drafts: FloorDr
           source: "automation",
           notionalUsd: x.notionalUsd,
           beta: x.beta,
-          cppi: { floor: d.cppi.floor.toString(), cushionRatio: d.cppi.cushionRatio.toString(), hedgeTarget: d.cppi.hedgeTarget.toString() },
+          ...(d.cppi ? { cppi: { floor: d.cppi.floor.toString(), cushionRatio: d.cppi.cushionRatio.toString(), hedgeTarget: d.cppi.hedgeTarget.toString() } } : {}),
         },
       })),
     );
@@ -112,4 +112,25 @@ export async function floorHedgeSizes(db: Db, userId: string): Promise<Record<st
     where i.user_id = ${userId}
     group by i.asset_id`);
   return Object.fromEntries((rows as unknown as { asset_id: string; size: string }[]).map((r) => [r.asset_id, r.size]));
+}
+
+/**
+ * Floor shorts left open for users with no active mandate (paused or revoked): owned size per user and perp.
+ * Only the net filled Floor size counts, so Shield and Bell hedges are never touched.
+ */
+export async function strandedFloorHedges(db: Db): Promise<Map<string, Record<string, string>>> {
+  const rows = await db.execute<{ user_id: string; asset_id: string; size: string }>(sql`
+    select i.user_id, i.asset_id,
+      sum(case when i.side = 'sell' then o.executed_qty else -o.executed_qty end)::text as size
+    from intents i
+    join hedges h on h.id = i.hedge_id and h.mode = 'floor'
+    join orders o on o.intent_id = i.id and o.status = 'complete'
+    where not exists (select 1 from mandates m where m.user_id = i.user_id and m.status = 'active')
+    group by i.user_id, i.asset_id
+    having sum(case when i.side = 'sell' then o.executed_qty else -o.executed_qty end) > 0`);
+  const out = new Map<string, Record<string, string>>();
+  for (const r of rows as unknown as { user_id: string; asset_id: string; size: string }[]) {
+    out.set(r.user_id, { ...(out.get(r.user_id) ?? {}), [r.asset_id]: r.size });
+  }
+  return out;
 }

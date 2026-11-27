@@ -29,6 +29,8 @@ export interface CheckIntent {
   reduceOnly: boolean;
   leverage: DecimalLike | null;
   notionalUsd: DecimalLike;
+  /** Base-unit quantity, when the order is sized in base units. Used for the wind-down allowance. */
+  qty?: DecimalLike | null;
   /** "automation" = Floor/Bell loops; "user" = a fresh, user-approved plan. */
   source: "automation" | "user";
   planHash: string | null;
@@ -43,6 +45,15 @@ export interface CheckContext {
   assertion: { planHash: string; approvedAssetIds: readonly string[] } | null;
   tradesToday: number;
   riskyValue: DecimalLike;
+  /** Value of the holdings this perp hedges (its symbol group). When set, it replaces `riskyValue` for the cap. */
+  hedgeableValue?: DecimalLike;
+  /** Notional of the short already open on this perp; it counts against the cap together with the new order. */
+  existingShortUsd?: DecimalLike;
+  /**
+   * Size of the automation-owned short on this perp. With no active mandate (paused, revoked), automation may
+   * still send a reduce-only buy of at most this size, so a stranded hedge can be closed.
+   */
+  ownedShortQty?: DecimalLike;
   /** Beta of the holding this instrument hedges. */
   beta: DecimalLike;
   /** Hard leverage cap for user-approved plans without a mandate. */
@@ -69,8 +80,10 @@ export function mandateCheck(intent: CheckIntent, ctx: CheckContext): CheckResul
   if (notional.lte(0)) reasons.push("notional must be positive");
 
   if (intent.source === "automation") {
-    const m = ctx.mandate;
-    if (!m || m.status !== "active") reasons.push("no active mandate");
+    const m = ctx.mandate && ctx.mandate.status === "active" ? ctx.mandate : null;
+    const windDown =
+      !m && reduces && intent.qty != null && ctx.ownedShortQty != null && dec(intent.qty).lte(dec(ctx.ownedShortQty));
+    if (!m && !windDown) reasons.push("no active mandate");
     if (intent.instrument !== "perp") reasons.push("automation may not trade spot");
     if (m && !m.allowedPerps.includes(intent.assetId)) reasons.push("instrument not allowed by mandate");
     if (m && opensRisk && (intent.leverage === null || dec(intent.leverage).gt(dec(m.leverageMax))))
@@ -85,8 +98,11 @@ export function mandateCheck(intent: CheckIntent, ctx: CheckContext): CheckResul
       reasons.push("leverage above cap");
   }
 
-  if (opensRisk && notional.gt(NOTIONAL_HEADROOM.mul(dec(ctx.riskyValue)).mul(dec(ctx.beta))))
-    reasons.push("notional exceeds 1.05 × holdings × beta");
+  if (opensRisk) {
+    const cap = NOTIONAL_HEADROOM.mul(dec(ctx.hedgeableValue ?? ctx.riskyValue)).mul(dec(ctx.beta));
+    if (notional.plus(dec(ctx.existingShortUsd ?? 0)).gt(cap))
+      reasons.push("notional exceeds 1.05 × holdings × beta");
+  }
 
   // Glade never trades with real money: production orders are always refused.
   if (ctx.env === "prod") reasons.push("production orders are never placed (no real money)");

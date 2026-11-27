@@ -8,7 +8,7 @@ import { parseMasterKey } from "@glade/stamp";
 import { TmApiError, type TmClient, type TokenManager } from "@glade/tm-client";
 import { and, eq } from "drizzle-orm";
 import type { Logger } from "pino";
-import { activeFloorUsers, floorHedgeSizes, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState } from "./db/floor";
+import { activeFloorUsers, floorHedgeSizes, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState, strandedFloorHedges } from "./db/floor";
 import { claimIntents, dueBellHedges, insertCloseIntents, MAX_CLOSE_ATTEMPTS, policyQueries, reclaimStale, recordIntentResult } from "./db/intents";
 import { executorRepo, logDecision, onboardingRepo, publish } from "./db/repos";
 import { createExecutor } from "./executor";
@@ -25,6 +25,7 @@ import type { PriceCache } from "./market/price-cache";
 import type { MarketStream } from "./market/stream";
 import { ensureSigner, loadSigner, onboardUser } from "./onboarding/onboard";
 import { authorizeIntent } from "./policy/authorize";
+import { groupExposure } from "./policy/exposure";
 
 /** Paper USDC credited to each new account. No real money is ever involved. */
 export const PAPER_START_USD = "10000";
@@ -76,6 +77,22 @@ export function startTrading(d: TradingDeps): () => void {
     return p.balances.filter((b) => !b.stable).reduce((a, b) => a.plus(dec(b.value ?? "0")), new Decimal(0)).toString();
   };
 
+  const perpsList = async () => {
+    const r = schema.assetRegistry;
+    return db
+      .select({ asset_id: r.assetId, symbol: r.symbol, max_leverage: r.maxLeverage })
+      .from(r)
+      .where(and(eq(r.env, env.TM_ENV), eq(r.type, "perp")));
+  };
+
+  // Cap for a new short: that stock's holdings against the short already open on its perp.
+  const exposure = async (userId: string, perpAssetId: string) => {
+    const u = venue.forUser(userId);
+    const [p, pos, perps] = await Promise.all([u.portfolio(), u.positions(), perpsList()]);
+    const holdings = p.balances.filter((b) => !b.stable && b.value).map((b) => ({ symbol: b.symbol, value: b.value! }));
+    return groupExposure({ perpAssetId, perps, holdings, positions: pos.positions });
+  };
+
   // The executor's policy callback sees only the ExecIntent; the full stored row is looked up here.
   const inFlight = new Map<string, ClaimedIntent>();
   const verifiedMandates = new Set<string>();
@@ -97,6 +114,8 @@ export function startTrading(d: TradingDeps): () => void {
           getActiveMandate: policy.getActiveMandate,
           tradesToday: policy.tradesToday,
           riskyValue,
+          exposure,
+          ownedShortQty: async (userId, perpAssetId) => (await floorHedgeSizes(db, userId))[perpAssetId] ?? "0",
           assetType: policy.assetType,
           liveSiblings: policy.liveSiblings,
           verifiedMandates,
@@ -137,13 +156,16 @@ export function startTrading(d: TradingDeps): () => void {
     log: (event: string, fields: Record<string, unknown>) => log.warn(fields, event),
   });
 
-  const perpsList = async () => {
-    const r = schema.assetRegistry;
-    return db
-      .select({ asset_id: r.assetId, symbol: r.symbol, max_leverage: r.maxLeverage })
-      .from(r)
-      .where(and(eq(r.env, env.TM_ENV), eq(r.type, "perp")));
-  };
+  // Only the Floor's own share of each short, never more than the actual position.
+  const ownedPositions = (positions: Awaited<ReturnType<ReturnType<typeof venue.forUser>["positions"]>>["positions"], own: Record<string, string>) =>
+    positions
+      .filter((x) => x.side === "short" && x.asset_id && x.size && x.mark_price && own[x.asset_id])
+      .map((x) => ({
+        asset_id: x.asset_id!,
+        size: Decimal.max(0, Decimal.min(dec(own[x.asset_id!]!), dec(x.size!))).toString(),
+        mark_price: x.mark_price!,
+      }))
+      .filter((x) => dec(x.size).gt(0));
 
   const floorInputs = async (userId: string) => {
     const u = venue.forUser(userId);
@@ -151,7 +173,6 @@ export function startTrading(d: TradingDeps): () => void {
     const holdings = p.balances
       .filter((b) => !b.stable && b.asset_id && b.economic_asset_id && b.value)
       .map((b) => ({ asset_id: b.asset_id!, economic_asset_id: b.economic_asset_id!, symbol: b.symbol, value: b.value! }));
-    if (holdings.length === 0) return null;
     const bases = new Set(perps.map((x) => x.symbol.toUpperCase()));
     const wanted = new Set([...holdings.map((h) => normalizeSymbol(h.symbol, bases)), "SP500", "XYZ100"]);
     const marks: Record<string, string> = {};
@@ -165,15 +186,7 @@ export function startTrading(d: TradingDeps): () => void {
     return {
       equity: p.total_usd ?? "0",
       holdings,
-      // Only the Floor's own share of each short, never more than the actual position.
-      positions: pos.positions
-        .filter((x) => x.side === "short" && x.asset_id && x.size && x.mark_price && own[x.asset_id])
-        .map((x) => ({
-          asset_id: x.asset_id!,
-          size: Decimal.max(0, Decimal.min(dec(own[x.asset_id!]!), dec(x.size!))).toString(),
-          mark_price: x.mark_price!,
-        }))
-        .filter((x) => dec(x.size).gt(0)),
+      positions: ownedPositions(pos.positions, own),
       perps: perps.map((x) => ({ asset_id: x.asset_id, symbol: x.symbol, ...(x.max_leverage ? { max_leverage: x.max_leverage } : {}) })),
       marks,
     };
@@ -249,6 +262,18 @@ export function startTrading(d: TradingDeps): () => void {
           hasOpenIntents: (u) => hasOpenIntents(db, u),
           insertIntents: (u, drafts, dec_) => insertFloorIntents(db, u, drafts, dec_),
           saveState: (u, s) => saveFloorState(db, u, s),
+          strandedHedges: async () => {
+            const out: { userId: string; positions: ReturnType<typeof ownedPositions> }[] = [];
+            for (const [userId, own] of await strandedFloorHedges(db)) {
+              const positions = ownedPositions((await venue.forUser(userId).positions()).positions, own);
+              if (positions.length) out.push({ userId, positions });
+            }
+            return out;
+          },
+          logWindDown: (u, explanation, drafts) =>
+            logDecision(db, { userId: u, engineVersion: ENGINE_VERSION, action: "floor_wind_down", explanation, inputs: {}, outputs: { drafts } }).then(() =>
+              publish(db, { type: "floor", data: { userId: u, explanation } }),
+            ),
           logDecision: (u, dec_) =>
             logDecision(db, { userId: u, engineVersion: ENGINE_VERSION, action: dec_.drafts.length ? "floor_rebalance" : "floor_at_risk", explanation: dec_.explanation, inputs: { skipped: dec_.skipped }, outputs: { drafts: dec_.drafts, floor: dec_.cppi.floor.toString(), cushionRatio: dec_.cppi.cushionRatio.toString() } }).then(() =>
               publish(db, { type: "floor", data: { userId: u, explanation: dec_.explanation } }),

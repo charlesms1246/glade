@@ -69,6 +69,10 @@ export interface PolicyDeps {
   verifiedMandates?: Set<string>;
   tradesToday: (userId: string, now: Date) => Promise<number>;
   riskyValue: (userId: string) => Promise<string>;
+  /** Size of the automation-owned (Floor) short on a perp; lets a reduce-only close run without an active mandate. */
+  ownedShortQty?: (userId: string, perpAssetId: string) => Promise<string>;
+  /** Holding value of this perp's symbol group and the short already open on it. Falls back to `riskyValue`. */
+  exposure?: (userId: string, perpAssetId: string) => Promise<{ holdingValue: string; existingShortUsd: string }>;
   /** Product type of an asset from the registry; null when unknown. */
   assetType: (assetId: string) => Promise<"spot" | "perp" | null>;
   /** Other live (pending, executing or done) intents of this plan that match the same leg. */
@@ -137,14 +141,17 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
     assertion = { planHash: hash, approvedAssetIds: plan.data.assetIds };
   }
 
-  const [signed, tradesToday, riskyValue] = await Promise.all([
+  const [signed, tradesToday, riskyValue, exposure] = await Promise.all([
     inp.source === "automation" ? deps.getActiveMandate(row.userId) : Promise.resolve(null),
     deps.tradesToday(row.userId, now),
     deps.riskyValue(row.userId),
+    !spot && deps.exposure ? deps.exposure(row.userId, row.assetId) : Promise.resolve(null),
   ]);
 
   let mandate: ActiveMandate | null = signed;
   if (signed && !(await mandateIsAuthentic(signed, row.userId, deps))) mandate = null;
+  const windDown = inp.source === "automation" && !mandate && !spot && row.side === "buy" && row.reduceOnly && row.qtyUnit === "base";
+  const ownedShortQty = windDown && deps.ownedShortQty ? await deps.ownedShortQty(row.userId, row.assetId) : undefined;
 
   return mandateCheck(
     {
@@ -155,6 +162,7 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
       reduceOnly: row.reduceOnly,
       leverage: row.leverage,
       notionalUsd: inp.notionalUsd,
+      qty: row.qtyUnit === "base" ? row.qty : null,
       source: inp.source,
       planHash: row.planHash,
     },
@@ -165,6 +173,8 @@ export async function authorizeIntent(row: IntentRow, deps: PolicyDeps, now: Dat
       assertion,
       tradesToday,
       riskyValue,
+      ...(exposure ? { hedgeableValue: exposure.holdingValue, existingShortUsd: exposure.existingShortUsd } : {}),
+      ...(ownedShortQty !== undefined ? { ownedShortQty } : {}),
       beta,
       userLeverageCap: deps.userLeverageCap,
     },

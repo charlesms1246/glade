@@ -75,3 +75,28 @@ describe("at-risk logging", () => {
     expect(calls.logged).toBe(2);
   });
 });
+
+describe("wind-down of a stranded Floor hedge", () => {
+  it("queues a reduce-only close of exactly the owned size and logs it", async () => {
+    const inserted: { qty: string; reduceOnly: boolean; side: string }[] = [];
+    const notes: string[] = [];
+    const { d } = deps({
+      activeUsers: async () => [],
+      strandedHedges: async () => [{ userId: "u", positions: [{ asset_id: "p", size: "0.5", mark_price: "100" }] }],
+      insertIntents: async (_u, drafts) => void inserted.push(...drafts),
+      logWindDown: async (_u, e) => void notes.push(e),
+    });
+    expect((await runFloorJob(d, now)).traded).toEqual(["u"]);
+    expect(inserted).toMatchObject([{ qty: "0.5", reduceOnly: true, side: "buy" }]);
+    expect(notes[0]).toMatch(/no longer active/);
+  });
+  it("skips users with unfinished intents", async () => {
+    const { d, calls } = deps({
+      activeUsers: async () => [],
+      hasOpenIntents: async () => true,
+      strandedHedges: async () => [{ userId: "u", positions: [{ asset_id: "p", size: "0.5", mark_price: "100" }] }],
+    });
+    await runFloorJob(d, now);
+    expect(calls.inserted).toBe(0);
+  });
+});
