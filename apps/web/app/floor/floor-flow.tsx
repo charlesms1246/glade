@@ -61,7 +61,7 @@ function RiskMeter({ v }: { v: FloorView }) {
 }
 
 export function FloorFlow() {
-  const { data: v, error: loadError, refresh } = usePoll<FloorView>("/api/floor", 8000);
+  const { data: v, error: loadError, refresh } = usePoll<FloorView>("/api/floor");
   const [editing, setEditing] = useState(false);
   const [floorPct, setFloorPct] = useState(85);
   const [multiplier, setMultiplier] = useState(4);

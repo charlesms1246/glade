@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { api } from "@/lib/client/http";
 
@@ -11,10 +12,14 @@ const usd = (v: string) => `$${Number(v).toLocaleString("en-US", { minimumFracti
 export function OnboardingStatus() {
   const [status, setStatus] = useState<Status>({ ready: false });
   const [error, setError] = useState<string | null>(null);
+  const [slow, setSlow] = useState(false);
+  const router = useRouter();
 
-  const linked = status.ready && status.tmLinked;
+  // Paper trading needs only the paper account, so polling stops as soon as it exists.
+  const ready = status.ready;
   useEffect(() => {
-    if (linked) return;
+    if (ready) return;
+    const slowTimer = setTimeout(() => setSlow(true), 60_000);
     let alive = true;
     const poll = async () => {
       try {
@@ -32,17 +37,24 @@ export function OnboardingStatus() {
     return () => {
       alive = false;
       clearInterval(t);
+      clearTimeout(slowTimer);
     };
-  }, [linked]);
+  }, [ready]);
+
+  useEffect(() => {
+    if (!ready) return;
+    const t = setTimeout(() => router.push("/buy"), 2000);
+    return () => clearTimeout(t);
+  }, [ready, router]);
 
   if (!status.ready) {
     return (
       <div className="rounded-2xl bg-sand p-7" aria-live="polite">
         <p className="font-medium">Setting up your paper account…</p>
         <p className="mt-2 text-sm text-ink-soft">
-          Glade is creating your signing key and funding a paper account with paper USDC. This usually takes a few
-          seconds.
+          Glade is creating your paper account and funding it with paper USDC. This usually takes a few seconds.
         </p>
+        {slow && <p className="mt-3 text-sm text-ink-soft">This is taking longer than usual. You can leave this page open or check back in a minute.</p>}
         {error && <p className="mt-3 text-sm text-rose">{error}</p>}
       </div>
     );
@@ -52,7 +64,7 @@ export function OnboardingStatus() {
     <div className="rounded-2xl bg-sand p-7" aria-live="polite">
       <p className="text-xs uppercase tracking-wider text-ink-soft">Paper account ready</p>
       <p className="num mt-2 font-display text-4xl text-forest-deep">{usd(status.cashUsd)} paper USDC</p>
-      <p className="mt-3 text-sm text-ink-soft">Simulated funds for practice. Prices are live; no real money moves.</p>
+      <p className="mt-3 text-sm text-ink-soft">Simulated funds for practice. Prices are live; no real money moves. Taking you to Buy…</p>
       <p className="mt-2 text-xs text-ink-soft">
         True Markets account: {status.tmLinked ? "linked" : "pending (optional; paper trading works without it)"}
       </p>

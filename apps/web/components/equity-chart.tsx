@@ -9,7 +9,7 @@ const H = 220;
 
 /** Paper equity over time, with the Floor target when a mandate is active. */
 export function EquityChart({ days = 7 }: { days?: number }) {
-  const { data } = usePoll<{ points: SeriesPoint[] }>(`/api/equity?days=${days}`, 60_000);
+  const { data } = usePoll<{ points: SeriesPoint[] }>(`/api/equity?days=${days}`, 120_000, false);
   if (!data) return <div className="h-56 animate-pulse rounded-xl bg-sand" aria-busy="true" />;
   const paths = equityPaths(data.points, W, H);
   if (!paths) {

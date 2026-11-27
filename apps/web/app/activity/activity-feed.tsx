@@ -22,7 +22,7 @@ const STATUS: Record<string, { label: string; className: string }> = {
 const when = (iso: string) => new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 export function ActivityFeed() {
-  const { data, error } = usePoll<{ items: ActivityItem[] }>("/api/activity", 5000);
+  const { data, error } = usePoll<{ items: ActivityItem[] }>("/api/activity");
   if (!data) return error ? <p className="text-rose">{error}</p> : <div className="h-40 rounded-2xl bg-sand" />;
   if (data.items.length === 0) return <p className="rounded-2xl bg-sand p-6 text-ink-soft">Nothing yet. Orders and engine decisions appear here.</p>;
 
