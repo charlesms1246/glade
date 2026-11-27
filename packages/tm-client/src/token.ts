@@ -48,6 +48,8 @@ export function apiKeyMinter(opts: {
   key: OrgKey;
   fetch?: typeof fetch;
   now?: () => number;
+  /** Called with the HTTP status of every mint request. */
+  onResponse?: (status: number) => void;
 }): MintFn {
   const doFetch = opts.fetch ?? fetch;
   const now = opts.now ?? Date.now;
@@ -60,6 +62,7 @@ export function apiKeyMinter(opts: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
+    opts.onResponse?.(res.status);
     const json: unknown = await res.json().catch(() => ({}));
     if (!res.ok) {
       throw new TmApiError(res.status, json, "POST", "/v1/auth/api-key/token");

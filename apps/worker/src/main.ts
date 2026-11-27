@@ -3,7 +3,7 @@ import { createDb, createLockConnection, schema } from "@glade/db";
 import { ENGINE_VERSION, referenceSpotSymbol } from "@glade/engine";
 import { loadEnv, TM_BASE_URLS } from "@glade/shared";
 import { apiKeyMinter, createTmClient, TokenManager, type OrgKey } from "@glade/tm-client";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql as dsql } from "drizzle-orm";
 import pino from "pino";
 import { createBellService } from "./bell/service";
 import { BELL_WATCHLIST, loadBellSigma, TICK_MS } from "./config";
@@ -12,6 +12,7 @@ import { loadHeldBellSymbols } from "./bell/watchlist";
 import { acquireLeaderLock, watchLeaderLock, type LockSql } from "./leader";
 import { PriceCache } from "./market/price-cache";
 import { MarketStream } from "./market/stream";
+import { CallCounter, type CallRow } from "./telemetry/tm-calls";
 import { startTrading } from "./trading";
 
 const env = loadEnv();
@@ -19,11 +20,25 @@ const log = pino({ name: "glade-worker", level: process.env.LOG_LEVEL ?? "info" 
 const urls = TM_BASE_URLS[env.TM_ENV];
 const { db, sql } = createDb(env.DATABASE_URL, { max: 6 });
 
+const calls = new CallCounter();
+const flushCalls = () =>
+  calls
+    .flush(async (rows: CallRow[]) => {
+      await db
+        .insert(schema.tmApiCalls)
+        .values(rows)
+        .onConflictDoUpdate({
+          target: [schema.tmApiCalls.day, schema.tmApiCalls.method, schema.tmApiCalls.route, schema.tmApiCalls.statusClass],
+          set: { count: dsql`${schema.tmApiCalls.count} + excluded.count` },
+        });
+    })
+    .catch((e) => log.warn({ error: String(e).slice(0, 200) }, "tm_call_flush_failed"));
+
 // Org mode needs an organization key. Without one the worker still runs public market data and Bell.
 let tokens: TokenManager | undefined;
 try {
   const key = JSON.parse(readFileSync(env.TM_ORG_KEY_FILE, "utf8")) as OrgKey;
-  const tm = new TokenManager(apiKeyMinter({ restBase: urls.rest, key }));
+  const tm = new TokenManager(apiKeyMinter({ restBase: urls.rest, key, onResponse: (status) => calls.record("POST", `${urls.rest}/v1/auth/api-key/token`, status) }));
   await tm.organizationId();
   tokens = tm;
   log.info({ env: env.TM_ENV }, "org mode: organization token ok");
@@ -34,8 +49,12 @@ try {
 const tm = createTmClient({
   restBase: urls.rest,
   ...(tokens ? { tokens } : {}),
-  onResponse: (r) => r.status >= 400 && log.warn({ ...r }, "tm_http_error"),
+  onResponse: (r) => {
+    calls.record(r.method, r.url, r.status);
+    if (r.status >= 400) log.warn({ ...r }, "tm_http_error");
+  },
 });
+const callsTimer = setInterval(flushCalls, 60_000);
 
 // The lock lives on its own connection: pooled ones are recycled, which would release it silently.
 const lockSql = createLockConnection(env.DATABASE_URL);
@@ -134,9 +153,11 @@ log.info({ tickMs: TICK_MS, spot: Object.fromEntries(spotRef), orgMode: Boolean(
 async function shutdown() {
   clearInterval(timer);
   clearInterval(watchTimer);
+  clearInterval(callsTimer);
   stopTrading();
   stopLockWatch();
   stream.stop();
+  await flushCalls();
   await sql.end({ timeout: 5 });
   await lockSql.end({ timeout: 5 });
   process.exit(0);

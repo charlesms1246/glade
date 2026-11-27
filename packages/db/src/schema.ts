@@ -355,3 +355,17 @@ export const paperEquitySnapshots = pgTable(
   },
   (t) => [primaryKey({ columns: [t.userId, t.at] })],
 );
+
+// ---- True Markets API call counts (no ids, queries or bodies) ---------------
+
+export const tmApiCalls = pgTable(
+  "tm_api_calls",
+  {
+    day: date("day", { mode: "string" }).notNull(),
+    method: text("method").notNull(),
+    route: text("route").notNull(),
+    statusClass: text("status_class").notNull(),
+    count: integer("count").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.day, t.method, t.route, t.statusClass] })],
+);
