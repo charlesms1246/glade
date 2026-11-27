@@ -174,13 +174,17 @@ export async function dueBellHedges(db: Db, now: Date) {
     done_opens: { assetId: string; qty: string }[];
     done_closes: { assetId: string; qty: string }[];
     failed_closes: number;
+    failed_by_leg: { assetId: string; qty: string; n: number }[];
   }>(sql`
     select h.id as hedge_id, h.user_id, o.inputs, o.plan_hash,
       coalesce((select json_agg(json_build_object('assetId', i.asset_id, 'qty', i.qty::text)) from intents i
         where i.hedge_id = h.id and i.kind = 'open' and i.status = 'done'), '[]') as done_opens,
       coalesce((select json_agg(json_build_object('assetId', i.asset_id, 'qty', i.qty::text)) from intents i
         where i.hedge_id = h.id and i.kind = 'close' and i.status = 'done'), '[]') as done_closes,
-      (select count(*)::int from intents i where i.hedge_id = h.id and i.kind = 'close' and i.status in ('failed', 'rejected')) as failed_closes
+      (select count(*)::int from intents i where i.hedge_id = h.id and i.kind = 'close' and i.status in ('failed', 'rejected')) as failed_closes,
+      coalesce((select json_agg(json_build_object('assetId', f.asset_id, 'qty', f.qty::text, 'n', f.n)) from (
+        select i.asset_id, i.qty, count(*)::int as n from intents i
+        where i.hedge_id = h.id and i.kind = 'close' and i.status in ('failed', 'rejected') group by i.asset_id, i.qty) f), '[]') as failed_by_leg
     from hedges h
     join lateral (
       select inputs, plan_hash from intents where hedge_id = h.id and kind = 'open' and status = 'done' limit 1
@@ -188,7 +192,7 @@ export async function dueBellHedges(db: Db, now: Date) {
     where h.mode = 'bell' and h.unwind_at <= ${now.toISOString()}::timestamptz
       and (h.status = 'active' or h.status = 'unwinding')
       and not exists (select 1 from intents c where c.hedge_id = h.id and c.kind = 'close' and c.status in ('pending', 'executing'))`);
-  type Row = { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string; done_opens: { assetId: string; qty: string }[]; done_closes: { assetId: string; qty: string }[]; failed_closes: number };
+  type Row = { hedge_id: string; user_id: string; inputs: unknown; plan_hash: string; done_opens: { assetId: string; qty: string }[]; done_closes: { assetId: string; qty: string }[]; failed_closes: number; failed_by_leg: { assetId: string; qty: string; n: number }[] };
   return (rows as unknown as Row[]).map((r) => ({
     hedgeId: r.hedge_id,
     userId: r.user_id,
@@ -197,6 +201,7 @@ export async function dueBellHedges(db: Db, now: Date) {
     doneOpens: r.done_opens,
     doneCloses: r.done_closes,
     failedCloses: r.failed_closes,
+    failedByLeg: r.failed_by_leg,
   }));
 }
 
@@ -240,4 +245,10 @@ export async function reclaimStale(db: Db, olderThanMs: number, limit: number): 
     hedgeId: r.hedgeId,
     reason: r.reason,
   }));
+}
+
+/** True when a decision with this action was already written for the hedge (keeps alerts to one per hedge). */
+export async function hedgeHasDecision(db: Db, action: string, hedgeId: string): Promise<boolean> {
+  const rows = await db.execute(sql`select 1 from decisions where action = ${action} and inputs->>'hedgeId' = ${hedgeId} limit 1`);
+  return (rows as unknown as unknown[]).length > 0;
 }

@@ -9,12 +9,12 @@ import { TmApiError, type TmClient, type TokenManager } from "@glade/tm-client";
 import { and, eq } from "drizzle-orm";
 import type { Logger } from "pino";
 import { activeFloorUsers, floorHedgeSizes, hasOpenIntents, insertFloorIntents, pendingOnboarding, saveFloorState, strandedFloorHedges } from "./db/floor";
-import { claimIntents, dueBellHedges, insertCloseIntents, MAX_CLOSE_ATTEMPTS, policyQueries, reclaimStale, recordIntentResult } from "./db/intents";
+import { claimIntents, dueBellHedges, hedgeHasDecision, insertCloseIntents, MAX_CLOSE_ATTEMPTS, policyQueries, reclaimStale, recordIntentResult } from "./db/intents";
 import { executorRepo, logDecision, onboardingRepo, publish } from "./db/repos";
 import { createExecutor } from "./executor";
 import { bellReportDb } from "./bell-report/db";
 import { runBellReportJob } from "./bell-report/job";
-import { unwindDrafts } from "./jobs/bell-unwind";
+import { runBellUnwind } from "./jobs/bell-unwind";
 import { runPendingIntents, type ClaimedIntent } from "./jobs/intent-runner";
 import { runOnboardingJob } from "./jobs/onboarding-job";
 import { runFloorJob } from "./floor/job";
@@ -212,7 +212,6 @@ export function startTrading(d: TradingDeps): () => void {
 
   const paused = () => env.GLADE_PAUSE_ALL;
   const atRiskLoggedAt = new Map<string, number>();
-  const alerted = new Set<string>();
   const timers = [
     every(
       "intents",
@@ -234,26 +233,21 @@ export function startTrading(d: TradingDeps): () => void {
       },
       "execution",
     ),
-    every("bell_unwind", 15_000, async () => {
-      for (const h of await dueBellHedges(db, new Date())) {
-        const drafts = unwindDrafts(h);
-        if (drafts.length === 0) {
-          // Every filled leg is closed (or none filled): the hedge is done.
-          await db.update(schema.hedges).set({ status: "closed", closedAt: new Date() }).where(eq(schema.hedges.id, h.hedgeId));
-          continue;
-        }
-        if (h.failedCloses >= MAX_CLOSE_ATTEMPTS * Math.max(1, h.doneOpens.length)) {
-          if (!alerted.has(h.hedgeId)) {
-            alerted.add(h.hedgeId);
-            await logDecision(db, { userId: h.userId, engineVersion: ENGINE_VERSION, action: "bell_unwind_stuck", explanation: `Shield until the bell could not close ${drafts.length} leg(s) after ${MAX_CLOSE_ATTEMPTS} attempts. The hedge is still open; unshield it manually.`, inputs: { hedgeId: h.hedgeId }, outputs: { failedCloses: h.failedCloses } });
-            await publish(db, { type: "intent", data: { userId: h.userId, intentId: null, outcome: "failed", explanation: "Shield until the bell could not close; unshield manually." } });
-          }
-          continue;
-        }
-        await insertCloseIntents(db, drafts);
-        log.info({ hedgeId: h.hedgeId, legs: drafts.length, retry: h.failedCloses > 0 }, "bell_unwind_queued");
-      }
-    }),
+    every("bell_unwind", 15_000, () =>
+      runBellUnwind({
+        due: () => dueBellHedges(db, new Date()),
+        insertCloses: (drafts) => insertCloseIntents(db, drafts),
+        markClosed: async (hedgeId) => void (await db.update(schema.hedges).set({ status: "closed", closedAt: new Date() }).where(eq(schema.hedges.id, hedgeId))),
+        alreadyAlerted: (hedgeId) => hedgeHasDecision(db, "bell_unwind_stuck", hedgeId),
+        alert: async (h, explanation, detail) => {
+          await logDecision(db, { userId: h.userId, engineVersion: ENGINE_VERSION, action: "bell_unwind_stuck", explanation, inputs: { hedgeId: h.hedgeId }, outputs: detail });
+          await publish(db, { type: "intent", data: { userId: h.userId, intentId: null, outcome: "failed", explanation } });
+        },
+        paused,
+        maxAttempts: MAX_CLOSE_ATTEMPTS,
+        log: (event, fields) => log.info(fields, event),
+      }),
+    ),
     every("floor", 30_000, () =>
       runFloorJob(
         {
