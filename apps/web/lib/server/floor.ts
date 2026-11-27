@@ -5,6 +5,7 @@ import { dec, Decimal } from "@glade/shared";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "./db";
 import { perpListings } from "./market";
+import { LEVERAGE_CAP } from "./plan-rules";
 import { mac, macOk } from "./session";
 import { stockHoldings } from "./shield";
 import { venueFor } from "./venue";
@@ -12,7 +13,6 @@ import { planAssertionOptions, verifyPlanAssertion } from "./webauthn";
 import type { AuthenticationResponseJSON } from "@simplewebauthn/server";
 
 export const FLOOR_DEFAULTS = { floorPct: "0.85", multiplier: "4", ratchet: true, leverageMax: "3", maxTradesDay: 10 } as const;
-export const LEVERAGE_CAP = 3;
 const LIQ_AT_RISK = new Decimal("0.15");
 const OFFER_TTL_MS = 5 * 60_000;
 
@@ -163,8 +163,11 @@ export async function signMandate(
       return row!.id;
     });
     return { ok: true, id };
-  } catch {
-    return { ok: false, error: "A newer mandate was signed meanwhile. Review it again." };
+  } catch (e) {
+    const code = (e as { code?: string; cause?: { code?: string } }).code ?? (e as { cause?: { code?: string } }).cause?.code;
+    if (code === "23505") return { ok: false, error: "A newer mandate was signed meanwhile. Review it again." };
+    console.error("signMandate failed", e instanceof Error ? e.message : e);
+    return { ok: false, error: "Could not save the mandate. Please try again." };
   }
 }
 
@@ -180,20 +183,21 @@ export async function setMandateStatus(userId: string, status: "paused" | "revok
 }
 
 export async function floorView(userId: string): Promise<FloorView> {
-  const [m] = await db()
-    .select()
-    .from(schema.mandates)
-    .where(and(eq(schema.mandates.userId, userId), ne(schema.mandates.status, "revoked")))
-    .orderBy(desc(schema.mandates.version))
-    .limit(1);
-  const log = await floorLog(userId);
+  const [[m], log] = await Promise.all([
+    db()
+      .select()
+      .from(schema.mandates)
+      .where(and(eq(schema.mandates.userId, userId), ne(schema.mandates.status, "revoked")))
+      .orderBy(desc(schema.mandates.version))
+      .limit(1),
+    floorLog(userId),
+  ]);
   if (!m) return { mandate: null, risk: null, log };
 
-  const venue = venueFor(userId);
-  const [portfolio, positions, { groups }, perps, [state]] = await Promise.all([
-    venue.portfolio(),
-    venue.positions(),
-    stockHoldings(userId),
+  const portfolio = await venueFor(userId).portfolio();
+  const positions = portfolio.positions ?? [];
+  const [{ groups }, perps, [state]] = await Promise.all([
+    stockHoldings(userId, portfolio),
     perpListings(),
     db().select().from(schema.floorState).where(eq(schema.floorState.userId, userId)),
   ]);

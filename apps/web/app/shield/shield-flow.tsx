@@ -53,6 +53,7 @@ export function ShieldFlow() {
     });
 
   const hasStocks = pf && pf.holdings.length > 0;
+  const unshieldable = pf?.positions.some((p) => p.mode === "shield" || p.mode === "bell" || p.mode === "mixed") ?? false;
   if (!pf) return <div className="h-64 animate-pulse rounded-2xl bg-sand" aria-busy="true" />;
 
   return (
@@ -72,7 +73,7 @@ export function ShieldFlow() {
               </li>
             ))}
           </ul>
-          {!unshield ? (
+          {!unshieldable ? null : !unshield ? (
             <button onClick={() => void reviewUnshield()} disabled={busy} className="mt-5 rounded-full border border-forest/30 px-6 py-3 text-sm font-medium text-forest hover:bg-sand disabled:opacity-50">
               Unshield…
             </button>
@@ -83,6 +84,16 @@ export function ShieldFlow() {
                 fees {usd(unshield.plan.feesUsd, 4)}. Your stocks stay as they are, and hedges placed by your Floor mandate stay with the
                 Floor.
               </p>
+              <ul className="num mt-3 divide-y divide-sand-deep">
+                {unshield.plan.legs.map((l, i) => (
+                  <li key={`${l.assetId}-${l.qty}`} className="flex flex-wrap justify-between gap-2 py-1.5">
+                    <span>Buy back {qty(l.qty)} {l.symbol}</span>
+                    <span className="text-ink-soft">
+                      {usd(l.notionalUsd)} · fee {usd(unshield.plan.legFeesUsd[i] ?? "0", 4)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
               <div className="mt-4 flex gap-3">
                 <button onClick={() => void confirmUnshield()} disabled={busy} className="rounded-full bg-forest px-5 py-2.5 font-medium text-paper hover:bg-forest-deep disabled:opacity-50">
                   Approve with passkey

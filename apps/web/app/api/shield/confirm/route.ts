@@ -1,24 +1,25 @@
 import { currentClosure } from "@glade/calendar";
 import { schema } from "@glade/db";
-import { dec } from "@glade/shared";
+import { dec, type Decimal } from "@glade/shared";
 import { eq } from "drizzle-orm";
 import { fail, json, withUser } from "@/lib/server/api";
 import { readJson } from "@/lib/server/body";
 import { db } from "@/lib/server/db";
-import { bellPlanError, legsOverCap, maxOrderUsd } from "@/lib/server/plan-rules";
+import { bellPlanError, LEVERAGE_CAP, legsOverCap, maxOrderUsd } from "@/lib/server/plan-rules";
 import { commitPlan, intentInputs, type ApprovalBody } from "@/lib/server/plans";
 import type { ShieldPlan } from "@/lib/server/shield";
+import { overHedgedPerps } from "@/lib/server/shield-sizing";
+import { venueFor } from "@/lib/server/venue";
 
-const MAX_LEVERAGE = 3;
-
-function validate(plan: ShieldPlan, closure: ReturnType<typeof currentClosure>): string | null {
+function validate(plan: ShieldPlan, closure: ReturnType<typeof currentClosure>, existing: ReadonlyMap<string, Decimal>): string | null {
   if (plan.kind !== "shield" && plan.kind !== "bell") return "Not a shield plan.";
   const opens = plan.legs.filter((l) => !l.reduceOnly);
   const closes = plan.legs.filter((l) => l.reduceOnly);
-  const openOk = opens.every((l) => l.side === "sell" && l.qtyUnit === "base" && l.leverage && dec(l.leverage).lte(MAX_LEVERAGE));
+  const openOk = opens.every((l) => l.side === "sell" && l.qtyUnit === "base" && l.leverage && dec(l.leverage).lte(LEVERAGE_CAP));
   const closeOk = plan.kind === "bell" ? closes.length === opens.length && closes.every((l) => l.side === "buy") : closes.length === 0;
   if (!plan.ok || opens.length === 0 || !openOk || !closeOk) return "This plan cannot be placed.";
   if (legsOverCap(plan.legs, maxOrderUsd()).length) return "A leg is above the per-order limit.";
+  if (overHedgedPerps(plan.rows, opens, existing).length) return "Your open shorts already cover this much of the stock. Review a fresh plan.";
   return plan.kind === "bell" ? bellPlanError(plan.unwindAt, closure) : null;
 }
 
@@ -30,7 +31,14 @@ export async function POST(req: Request) {
       ? await db().select({ id: schema.bellSessions.id }).from(schema.bellSessions).where(eq(schema.bellSessions.closeAt, closure.closeAt))
       : [];
 
-    const r = await commitPlan(uid, body, (plan) => validate(plan, closure), async (tx, a) => {
+    // Current shorts per perp symbol, so a stale plan cannot stack a second hedge on top.
+    const existing = new Map<string, Decimal>();
+    for (const p of await venueFor(uid).positions()) {
+      if (p.side !== "short" || !p.symbol || !p.size) continue;
+      existing.set(p.symbol, (existing.get(p.symbol) ?? dec(0)).plus(dec(p.size).mul(dec(p.mark_price ?? p.entry_price ?? "0"))));
+    }
+
+    const r = await commitPlan(uid, body, (plan) => validate(plan, closure, existing), async (tx, a) => {
       const { plan } = a;
       const [hedge] = await tx
         .insert(schema.hedges)

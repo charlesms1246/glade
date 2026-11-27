@@ -1,5 +1,8 @@
 import { dec } from "@glade/shared";
 
+/** Highest leverage any mandate or plan may use. */
+export const LEVERAGE_CAP = 3;
+
 export const BELL_UNWIND_MIN = 5;
 
 /** When a Bell hedge for this closure unwinds: a few minutes after the open. */

@@ -1,6 +1,6 @@
 import "server-only";
 import { schema } from "@glade/db";
-import { Decimal, dec, dmin } from "@glade/shared";
+import { Decimal, dec, dmax } from "@glade/shared";
 import { and, eq, inArray } from "drizzle-orm";
 import { db } from "./db";
 import { stockHoldings } from "./shield";
@@ -23,7 +23,7 @@ export interface HedgePosition {
   unrealizedPnlUsd: string | null;
   notionalUsd: string;
   leverage: number | null;
-  mode: "shield" | "floor" | "bell";
+  mode: "shield" | "floor" | "bell" | "mixed" | "unattributed";
 }
 
 export interface PortfolioView {
@@ -40,23 +40,28 @@ const s2 = (d: Decimal) => d.toFixed(2);
 /** Paper portfolio, holdings grouped by stock, hedges labelled by mode, and the exposure split. */
 export async function portfolioView(userId: string): Promise<PortfolioView> {
   const venue = venueFor(userId);
-  const [portfolio, positions, { groups }, hedges] = await Promise.all([
-    venue.portfolio(),
-    venue.positions(),
-    stockHoldings(userId),
+  const portfolio = await venue.portfolio();
+  const positions = portfolio.positions ?? [];
+  const [{ groups }, hedges] = await Promise.all([
+    stockHoldings(userId, portfolio),
     db()
       .select({ mode: schema.hedges.mode, legs: schema.hedges.legs })
       .from(schema.hedges)
       .where(and(eq(schema.hedges.userId, userId), inArray(schema.hedges.status, ["planned", "active", "unwinding"]))),
   ]);
 
-  const modeByAsset = new Map<string, "shield" | "floor" | "bell">();
+  const modesByAsset = new Map<string, Set<"shield" | "floor" | "bell">>();
   for (const h of hedges) {
     for (const l of (h.legs as { assetId?: string; perp_asset_id?: string }[]) ?? []) {
       const id = l.assetId ?? l.perp_asset_id;
-      if (id) modeByAsset.set(id, h.mode);
+      if (id) modesByAsset.set(id, (modesByAsset.get(id) ?? new Set()).add(h.mode));
     }
   }
+  const modeOf = (assetId: string): HedgePosition["mode"] => {
+    const modes = modesByAsset.get(assetId);
+    if (!modes || modes.size === 0) return "unattributed";
+    return modes.size > 1 ? "mixed" : [...modes][0]!;
+  };
 
   const bySymbol = new Map(portfolio.balances.map((b) => [b.asset_id ?? b.symbol, b]));
   const holdings: HoldingCard[] = groups.map((g) => ({
@@ -81,15 +86,16 @@ export async function portfolioView(userId: string): Promise<PortfolioView> {
       unrealizedPnlUsd: p.unrealized_pnl ?? null,
       notionalUsd: s2(dec(p.size!).mul(dec(p.mark_price ?? p.entry_price ?? "0"))),
       leverage: p.leverage ?? null,
-      mode: modeByAsset.get(p.asset_id ?? "") ?? "shield",
+      mode: modeOf(p.asset_id ?? ""),
     }));
 
   const stockValue = groups.reduce((a, g) => a.plus(g.value), dec(0));
   const sumMode = (m: (x: HedgePosition) => boolean) => hedgePositions.filter(m).reduce((a, p) => a.plus(p.notionalUsd), dec(0));
-  const share = (v: Decimal) => (stockValue.gt(0) ? dmin(dec(1), v.div(stockValue)) : dec(0));
+  const share = (v: Decimal) => (stockValue.gt(0) ? v.div(stockValue) : dec(0));
   const floored = share(sumMode((p) => p.mode === "floor"));
-  const shielded = dmin(dec(1).minus(floored), share(sumMode((p) => p.mode !== "floor")));
-  const exposed = stockValue.gt(0) ? dec(1).minus(floored).minus(shielded) : dec(0);
+  // Not capped: a share above 100% means over-hedged, and the gauge says so.
+  const shielded = share(sumMode((p) => p.mode !== "floor"));
+  const exposed = stockValue.gt(0) ? dmax(dec(0), dec(1).minus(floored).minus(shielded)) : dec(0);
 
   return {
     cashUsd: s2(dec(portfolio.cash_usd ?? "0")),

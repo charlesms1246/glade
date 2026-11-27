@@ -38,6 +38,10 @@ export function ShieldPlanView({ plan }: { plan: ShieldPlan }) {
           </tbody>
         </table>
       </div>
+      <p className="text-sm">
+        Already hedged <span className="num font-medium">{pct(plan.hedgedBefore)}</span> → after this <span className="num font-medium">{pct(plan.hedgedAfter)}</span>
+        <span className="text-ink-soft"> of your stock value (adjusted for each stock&apos;s beta). Existing shorts count; only the gap is added.</span>
+      </p>
       {plan.unhedgeable.length > 0 && <p className="text-sm text-ink-soft">No perp available for: {plan.unhedgeable.join(", ")}.</p>}
 
       <div className="rounded-xl bg-paper p-5">
