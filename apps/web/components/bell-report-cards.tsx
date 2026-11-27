@@ -1,8 +1,7 @@
+import { signedPct, usd } from "@/lib/client/format";
 import type { BellReportCard } from "@/lib/server/bell-reports";
 import type { BellAggregate } from "@/lib/server/bell-summary";
 
-const pct = (v: string, dp = 2) => `${Number(v) >= 0 ? "+" : "−"}${Math.abs(Number(v) * 100).toFixed(dp)}%`;
-const usd = (v: string) => `${Number(v) < 0 ? "−" : ""}$${Math.abs(Number(v)).toFixed(2)}`;
 const day = (iso: string) => new Date(iso).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "America/New_York" });
 
 export function BellAccuracy({ a }: { a: BellAggregate }) {
@@ -36,8 +35,8 @@ export function BellReportCards({ cards }: { cards: BellReportCard[] }) {
   }
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      {cards.map((c) => (
-        <article key={c.closeAt} className="rounded-2xl border border-sand-deep bg-white/80 p-6">
+      {cards.map((c, i) => (
+        <article key={`${c.closeAt}-${i}`} className="rounded-2xl border border-sand-deep bg-white/80 p-6">
           <p className="text-xs uppercase tracking-wider text-ink-soft">
             {c.kind} closure · {day(c.closeAt)} → {day(c.openAt)}
           </p>
@@ -49,13 +48,13 @@ export function BellReportCards({ cards }: { cards: BellReportCard[] }) {
                   <div>
                     <dt className="text-xs text-ink-soft">Estimate</dt>
                     <dd className="num">
-                      {pct(l.estGap)}
+                      {signedPct(l.estGap)}
                       {l.band && <span className="text-ink-soft"> ±{(Number(l.band) * 100).toFixed(1)}%</span>}
                     </dd>
                   </div>
                   <div>
                     <dt className="text-xs text-ink-soft">Opened</dt>
-                    <dd className="num">{pct(l.realisedGap)}</dd>
+                    <dd className="num">{signedPct(l.realisedGap)}</dd>
                   </div>
                   <div>
                     <dt className="text-xs text-ink-soft">Hedge P&amp;L</dt>

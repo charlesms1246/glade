@@ -61,6 +61,8 @@ async function closeSnapshotFor(symbol: string, closeAtIso: string) {
 }
 
 async function liveMark(symbol: string): Promise<string | null> {
+  "use cache";
+  cacheLife({ stale: 10, revalidate: 10, expire: 60 });
   const r = await tmPublic().prices(symbol, "perp");
   return r.candles?.find((c) => c.interval === "1h")?.closePrice ?? r.candles?.[0]?.closePrice ?? null;
 }

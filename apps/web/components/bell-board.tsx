@@ -1,25 +1,33 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { signedPct, usd } from "@/lib/client/format";
 import type { BellView } from "@/lib/server/bell";
 
-const pct = (v: string | null, dp = 2) => (v === null ? "—" : `${Number(v) >= 0 ? "+" : "−"}${Math.abs(Number(v) * 100).toFixed(dp)}%`);
 
 export function BellBoard({ initial }: { initial: BellView }) {
   const [view, setView] = useState(initial);
   const [updated, setUpdated] = useState<string>(initial.now);
 
+  // Estimates move during a closure; while the market is open only a slow check for the next closure is needed.
+  const closed = view.closure !== null;
   useEffect(() => {
-    const t = setInterval(async () => {
-      const r = await fetch("/api/bell", { cache: "no-store" });
-      if (r.ok) {
-        const v = (await r.json()) as BellView;
-        setView(v);
-        setUpdated(v.now);
+    const load = async () => {
+      if (document.hidden) return;
+      try {
+        const r = await fetch("/api/bell");
+        if (r.ok) {
+          const v = (await r.json()) as BellView;
+          setView(v);
+          setUpdated(v.now);
+        }
+      } catch {
+        // Keep showing the last estimate; the next tick retries.
       }
-    }, 15_000);
+    };
+    const t = setInterval(load, closed ? 15_000 : 60_000);
     return () => clearInterval(t);
-  }, []);
+  }, [closed]);
 
   if (!view.closure) {
     return (
@@ -41,19 +49,19 @@ export function BellBoard({ initial }: { initial: BellView }) {
             </div>
             {c.impliedOpen ? (
               <>
-                <p className="mt-4 text-sm text-ink-soft">Implied open</p>
-                <p className="num text-3xl">${c.impliedOpen}</p>
+                <p className="mt-4 text-sm text-ink-soft">Opening estimate</p>
+                <p className="num text-3xl">{usd(c.impliedOpen)}</p>
                 <p className={`num mt-1 text-lg ${Number(c.gap) >= 0 ? "text-forest" : "text-rose"}`}>
-                  {pct(c.gap)} <span className="text-ink-soft">± {(Number(c.band) * 100).toFixed(1)}%</span>
+                  {c.gap === null ? "—" : signedPct(c.gap)} <span className="text-ink-soft">± {(Number(c.band) * 100).toFixed(1)}%</span>
                 </p>
                 <dl className="mt-4 grid grid-cols-3 gap-2 text-xs text-ink-soft">
                   <div>
                     <dt>Close</dt>
-                    <dd className="num text-ink">${c.close}</dd>
+                    <dd className="num text-ink">{usd(c.close ?? "0")}</dd>
                   </div>
                   <div>
                     <dt>Perp now</dt>
-                    <dd className="num text-ink">${c.markNow}</dd>
+                    <dd className="num text-ink">{usd(c.markNow ?? "0")}</dd>
                   </div>
                   <div>
                     <dt>Basis at close</dt>

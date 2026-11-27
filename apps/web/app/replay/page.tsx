@@ -1,3 +1,4 @@
+import { usd } from "@/lib/client/format";
 import d30 from "../../../../docs/evidence/replay-NVDA-30d-f0.85.json";
 import d90 from "../../../../docs/evidence/replay-NVDA-90d-f0.85.json";
 
@@ -33,7 +34,6 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function Panel({ data, title }: { data: Replay; title: string }) {
   const r = data.summary.result;
-  const usd = (v: string) => `$${Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   return (
     <section className="rounded-2xl border border-sand-deep bg-white/80 p-6">
       <h2 className="font-display text-2xl">{title}</h2>
